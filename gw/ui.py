@@ -49,7 +49,14 @@ def format_status(status: WorktreeStatus) -> str:
         upstream = f"{status.upstream} ↑{ahead} ↓{behind}"
     else:
         upstream = "no-upstream"
-    return f"{branch:30} {ts_str:20} {upstream:20} {status.path}"
+    pr = "no-pr"
+    if status.pr_number:
+        state = (status.pr_state or "unknown").lower()
+        title = status.pr_title or ""
+        if len(title) > 24:
+            title = f"{title[:21]}..."
+        pr = f"#{status.pr_number} {state} {title}".strip()
+    return f"{branch:30} {ts_str:20} {upstream:20} {pr:32} {status.path}"
 
 
 def pick_worktree(statuses: list[WorktreeStatus]) -> WorktreeStatus | None:
@@ -68,8 +75,8 @@ def confirm(text: str) -> bool:
 
 def render_table(statuses: Iterable[WorktreeStatus]) -> str:
     lines = [
-        f"{'BRANCH':30} {'LAST COMMIT':20} {'UPSTREAM':20} PATH",
-        "-" * 84,
+        f"{'BRANCH':30} {'LAST COMMIT':20} {'UPSTREAM':20} {'PR':32} PATH",
+        "-" * 118,
     ]
     for status in statuses:
         lines.append(format_status(status))

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
@@ -12,9 +14,9 @@ class GitError(RuntimeError):
     pass
 
 
-def _run_git(args: list[str], cwd: Path | None = None) -> str:
+def _run_cmd(args: list[str], cwd: Path | None = None) -> str:
     result = subprocess.run(
-        ["git", *args],
+        args,
         cwd=str(cwd) if cwd else None,
         check=False,
         capture_output=True,
@@ -23,6 +25,10 @@ def _run_git(args: list[str], cwd: Path | None = None) -> str:
     if result.returncode != 0:
         raise GitError(result.stderr.strip() or result.stdout.strip())
     return result.stdout.strip()
+
+
+def _run_git(args: list[str], cwd: Path | None = None) -> str:
+    return _run_cmd(["git", *args], cwd=cwd)
 
 
 def get_repo_root(cwd: Path) -> Path | None:
@@ -138,6 +144,64 @@ def get_ahead_behind(repo_root: Path, branch: str, upstream: str) -> tuple[int, 
     )
     left, _, right = out.partition("\t")
     return int(left), int(right)
+
+
+def get_github_repo(repo_root: Path) -> str | None:
+    try:
+        remote = _run_git(["-C", str(repo_root), "remote", "get-url", "origin"])
+    except GitError:
+        return None
+    return _parse_github_repo(remote)
+
+
+def _parse_github_repo(remote: str) -> str | None:
+    patterns = [
+        r"^git@github\.com:(?P<repo>[^/]+/[^/]+?)(?:\.git)?$",
+        r"^ssh://git@github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?$",
+        r"^https?://github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?$",
+        r"^git://github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, remote.strip())
+        if match:
+            return match.group("repo")
+    return None
+
+
+def list_pull_requests(repo_root: Path, repo: str) -> dict[str, dict[str, str | int]]:
+    try:
+        out = _run_cmd(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--json",
+                "number,title,state,url,headRefName",
+                "--repo",
+                repo,
+            ],
+            cwd=repo_root,
+        )
+    except GitError:
+        return {}
+    try:
+        data = json.loads(out) if out else []
+    except json.JSONDecodeError:
+        return {}
+    prs: dict[str, dict[str, str | int]] = {}
+    for pr in data:
+        head = pr.get("headRefName")
+        if not head:
+            continue
+        prs[head] = {
+            "number": pr.get("number"),
+            "title": pr.get("title"),
+            "state": pr.get("state"),
+            "url": pr.get("url"),
+        }
+    return prs
 
 
 def is_ancestor(repo_root: Path, branch: str, target: str) -> bool:

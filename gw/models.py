@@ -19,3 +19,7 @@ class WorktreeStatus:
     upstream: str | None
     ahead: int | None
     behind: int | None
+    pr_number: int | None = None
+    pr_title: str | None = None
+    pr_state: str | None = None
+    pr_url: str | None = None

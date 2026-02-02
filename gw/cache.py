@@ -27,15 +27,40 @@ class Cache:
                 upstream TEXT,
                 ahead INTEGER,
                 behind INTEGER,
+                pr_number INTEGER,
+                pr_title TEXT,
+                pr_state TEXT,
+                pr_url TEXT,
                 updated_at INTEGER
             )
             """
+        )
+        self._ensure_columns(
+            {
+                "pr_number": "INTEGER",
+                "pr_title": "TEXT",
+                "pr_state": "TEXT",
+                "pr_url": "TEXT",
+            }
         )
         self._conn.commit()
 
     def load_worktrees(self) -> list[WorktreeStatus]:
         cur = self._conn.execute(
-            "SELECT path, branch, last_commit_ts, upstream, ahead, behind FROM worktrees"
+            """
+            SELECT
+                path,
+                branch,
+                last_commit_ts,
+                upstream,
+                ahead,
+                behind,
+                pr_number,
+                pr_title,
+                pr_state,
+                pr_url
+            FROM worktrees
+            """
         )
         rows = cur.fetchall()
         return [
@@ -46,6 +71,10 @@ class Cache:
                 upstream=row[3],
                 ahead=row[4],
                 behind=row[5],
+                pr_number=row[6],
+                pr_title=row[7],
+                pr_state=row[8],
+                pr_url=row[9],
             )
             for row in rows
         ]
@@ -61,15 +90,23 @@ class Cache:
                 upstream,
                 ahead,
                 behind,
+                pr_number,
+                pr_title,
+                pr_state,
+                pr_url,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 branch=excluded.branch,
                 last_commit_ts=excluded.last_commit_ts,
                 upstream=excluded.upstream,
                 ahead=excluded.ahead,
                 behind=excluded.behind,
+                pr_number=excluded.pr_number,
+                pr_title=excluded.pr_title,
+                pr_state=excluded.pr_state,
+                pr_url=excluded.pr_url,
                 updated_at=excluded.updated_at
             """,
             [
@@ -80,12 +117,23 @@ class Cache:
                     s.upstream,
                     s.ahead,
                     s.behind,
+                    s.pr_number,
+                    s.pr_title,
+                    s.pr_state,
+                    s.pr_url,
                     now,
                 )
                 for s in statuses
             ],
         )
         self._conn.commit()
+
+    def _ensure_columns(self, columns: dict[str, str]) -> None:
+        cur = self._conn.execute("PRAGMA table_info(worktrees)")
+        existing = {row[1] for row in cur.fetchall()}
+        for name, col_type in columns.items():
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE worktrees ADD COLUMN {name} {col_type}")
 
 
 def _repo_id(repo_root: Path) -> str:

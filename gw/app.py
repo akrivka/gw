@@ -125,6 +125,10 @@ class App:
             git.sync_repo(self.repo_root)
         except git.GitError as exc:
             print(f"git fetch failed: {exc}", file=sys.stderr)
+        github_repo = git.get_github_repo(self.repo_root)
+        pr_by_branch: dict[str, dict[str, str | int]] = {}
+        if github_repo:
+            pr_by_branch = git.list_pull_requests(self.repo_root, github_repo)
         worktrees = git.list_worktrees(self.repo_root)
         statuses: list[WorktreeStatus] = []
         for wt in worktrees:
@@ -136,6 +140,7 @@ class App:
                     ahead, behind = git.get_ahead_behind(self.repo_root, wt.branch, upstream)
                 except git.GitError:
                     ahead = behind = None
+            pr_info = pr_by_branch.get(wt.branch or "") if wt.branch else None
             statuses.append(
                 WorktreeStatus(
                     path=wt.path,
@@ -144,6 +149,10 @@ class App:
                     upstream=upstream,
                     ahead=ahead,
                     behind=behind,
+                    pr_number=pr_info.get("number") if pr_info else None,
+                    pr_title=pr_info.get("title") if pr_info else None,
+                    pr_state=pr_info.get("state") if pr_info else None,
+                    pr_url=pr_info.get("url") if pr_info else None,
                 )
             )
         self.cache.upsert_worktrees(statuses)
