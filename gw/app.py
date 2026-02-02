@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
@@ -40,7 +42,7 @@ class App:
                 skip_branch_color=True,
             )
             sys.stdout.write("\n".join(cached_lines) + "\n")
-            sys.stdout.write("Refreshing local...\n")
+            sys.stdout.write("Refreshing...\n")
             sys.stdout.flush()
 
             line_count = len(cached_lines)
@@ -48,6 +50,18 @@ class App:
             statuses_by_path: dict[Path, WorktreeStatus] = {
                 s.path: s for s in initial_rows if s.path
             }
+            refresh_stop = threading.Event()
+
+            def animate_refresh() -> None:
+                dots = 1
+                while not refresh_stop.is_set():
+                    self._write_status_line(f"Refreshing{'.' * dots}", line_count)
+                    dots = 1 if dots >= 3 else dots + 1
+                    time.sleep(0.3)
+                self._write_status_line("", line_count)
+
+            refresh_thread = threading.Thread(target=animate_refresh, daemon=True)
+            refresh_thread.start()
 
             def update_row(status: WorktreeStatus) -> None:
                 statuses_by_path[status.path] = status
@@ -58,21 +72,24 @@ class App:
                 line = render_table_lines([status])[2]
                 self._rewrite_table_line(line_idx, line, line_count)
 
-            local_statuses = self._refresh_statuses_local_stream(
-                row_order,
-                update_row,
-                statuses_by_path,
-            )
-            self._write_status_line("Refreshing remote...", line_count)
-            statuses_by_path.update(local_statuses)
+            try:
+                local_statuses = self._refresh_statuses_local_stream(
+                    row_order,
+                    update_row,
+                    statuses_by_path,
+                )
+                statuses_by_path.update(local_statuses)
 
-            remote_statuses = self._refresh_statuses_remote_stream(
-                row_order,
-                statuses_by_path,
-                update_row,
-            )
-            statuses_by_path.update(remote_statuses)
-            self._write_status_line("", line_count)
+                remote_statuses = self._refresh_statuses_remote_stream(
+                    row_order,
+                    statuses_by_path,
+                    update_row,
+                )
+                statuses_by_path.update(remote_statuses)
+            finally:
+                refresh_stop.set()
+                refresh_thread.join(timeout=1)
+
             final_statuses = [statuses_by_path[wt.path] for wt in row_order if wt.path in statuses_by_path]
             self.cache.upsert_worktrees(final_statuses)
             return
