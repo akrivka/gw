@@ -31,6 +31,7 @@ Whenever `gw` is run from anywhere within this folder, it should deduce that it 
 * `gw` - fuzzy search through all worktrees in current repo, sorted by recency, `cd` into it on enter
 * `gw list` - list all worktrees, including extra information like upstream branch status (diff, behind/ahead, PR)
 * `gw info` - shows info about the current worktree, if in one
+* `gw init` - creates the gw folder structure for the current repo (assuming it's a "normal" clone), shows a big and clear prompt that this is a destructive operation that will move the current clone into `main/` probably and create worktrees for all local branches (achieving the invariant)
 * `gw new [branch-name]` - create a new branch and worktree for it, `cd` into it
 * `gw delete` - fuzzy search to delete a worktree, use confirm dialog, `cd` into main if current worktree is deleted
 * `gw delete .` - delete current worktree, use confirm dialog, `cd` into main
@@ -38,6 +39,7 @@ Whenever `gw` is run from anywhere within this folder, it should deduce that it 
 * `gw delete no-upstream` - delete all worktrees whose branches have no upstream set, use confirm dialog, `cd` into main if current worktree is deleted
 * `gw rename [new-branch-name]` - rename current worktree and branch
 * `gw rename [old-branch-name] [new-branch-name]` - rename specified worktree and branch
+* `gw doctor` - checks all worktrees without a branch and all branches without a worktree, shows a list navigatable by arrow keys, which for each transgression lets you cycle through options for what to do with it: for stale worktrees, there seems to be only one option (delete them), for branches without worktrees, cycle between deleting the branches and creating the worktree, enter should execute the changes
 
 ### Sync and caching
 

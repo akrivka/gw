@@ -27,3 +27,13 @@ class WorktreeStatus:
     changes_added: int | None = None
     changes_deleted: int | None = None
     changes_target: str | None = None
+
+
+@dataclass
+class DoctorItem:
+    label: str
+    actions: list[str]
+    kind: str
+    selected: int = 0
+    path: Path | None = None
+    branch: str | None = None

@@ -27,6 +27,12 @@ def info_cmd() -> None:
     app.info()
 
 
+@main.command("init")
+def init_cmd() -> None:
+    app = App(Path.cwd())
+    app.init()
+
+
 @main.command("new")
 @click.argument("branch")
 def new_cmd(branch: str) -> None:
@@ -56,6 +62,12 @@ def rename_cmd(args: tuple[str, ...]) -> None:
         app.rename(args[0], args[1])
     else:
         raise click.UsageError("rename requires 1 or 2 arguments")
+
+
+@main.command("doctor")
+def doctor_cmd() -> None:
+    app = App(Path.cwd())
+    app.doctor()
 
 
 if __name__ == "__main__":

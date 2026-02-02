@@ -6,13 +6,14 @@ import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+import shutil
 from pathlib import Path
 
 from . import git
 from .cache import Cache
 from .hooks import run_post_worktree_creation
-from .models import WorktreeStatus
-from .ui import ANSI_CACHED, pick_worktree, render_table, render_table_lines
+from .models import DoctorItem, WorktreeStatus
+from .ui import ANSI_CACHED, pick_worktree, render_table, render_table_lines, run_doctor
 
 
 class App:
@@ -189,6 +190,150 @@ class App:
         self._refresh_statuses()
         if self._is_current_path(old_path):
             print(new_path)
+
+    def init(self) -> None:
+        if git.is_bare_repo(self.repo_root):
+            print("Repository already appears to be initialized (bare .git).")
+            return
+        worktrees = git.list_worktrees(self.repo_root)
+        if len(worktrees) > 1:
+            print("Repository already has worktrees; gw init expects a normal clone.")
+            return
+        if not git.is_working_tree_clean(self.repo_root):
+            print("Working tree is not clean. Commit or stash changes before running gw init.")
+            return
+        branches = git.list_local_branches(self.repo_root)
+        if not branches:
+            print("No local branches found.")
+            return
+        target_paths = [self.repo_root / branch for branch in branches]
+        collisions = [p for p in target_paths if p.exists()]
+        for path in target_paths:
+            for parent in path.parents:
+                if parent == self.repo_root:
+                    break
+                if parent.exists() and not parent.is_dir():
+                    collisions.append(parent)
+                    break
+        if collisions:
+            print("Init would overwrite existing paths:")
+            for path in collisions:
+                print(f"  {path}")
+            return
+        from .ui import confirm
+
+        warning = "\n".join(
+            [
+                "gw init will:",
+                f"- Convert {self.repo_root} into a gw repo with worktrees under {self.repo_root}/<branch>",
+                "- Replace .git with a bare repo",
+                f"- Create worktrees for {len(branches)} local branches",
+                "This is destructive. Proceed?",
+            ]
+        )
+        if not confirm(warning):
+            return
+        temp_bare = self.repo_root.parent / f".{self.repo_root.name}.gw-init.git"
+        if temp_bare.exists():
+            print(f"Temp path already exists: {temp_bare}")
+            return
+        backup_git = self.repo_root / ".git.pre-gw"
+        if backup_git.exists():
+            print(f"Backup path already exists: {backup_git}")
+            return
+        try:
+            git.clone_bare(self.repo_root, temp_bare)
+            shutil.move(str(self.repo_root / ".git"), str(backup_git))
+            shutil.move(str(temp_bare), str(self.repo_root / ".git"))
+            for branch in branches:
+                path = self.repo_root / branch
+                git.create_worktree_for_branch(self.repo_root, branch, path)
+                run_post_worktree_creation(self.repo_root, path)
+            keep = {self.repo_root / ".git", backup_git}
+            for path in target_paths:
+                relative = path.relative_to(self.repo_root)
+                keep.add(self.repo_root / relative.parts[0])
+            for entry in self.repo_root.iterdir():
+                if entry in keep:
+                    continue
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+            try:
+                shutil.rmtree(backup_git)
+            except OSError as exc:
+                print(f"Warning: failed to remove backup {backup_git}: {exc}", file=sys.stderr)
+        except (git.GitError, OSError) as exc:
+            print(f"gw init failed: {exc}", file=sys.stderr)
+            return
+        self._refresh_statuses()
+        print(self._main_path())
+
+    def doctor(self) -> None:
+        worktrees = git.list_worktrees(self.repo_root)
+        worktree_branches = {wt.branch for wt in worktrees if wt.branch}
+        branches = git.list_local_branches(self.repo_root)
+        stale_worktrees = [wt for wt in worktrees if not wt.branch]
+        missing_worktrees = [branch for branch in branches if branch not in worktree_branches]
+        items: list[DoctorItem] = []
+        for wt in stale_worktrees:
+            label = f"Detached worktree: {wt.path}"
+            items.append(
+                DoctorItem(
+                    label=label,
+                    actions=["delete worktree"],
+                    kind="stale_worktree",
+                    path=wt.path,
+                )
+            )
+        for branch in missing_worktrees:
+            label = f"Branch without worktree: {branch}"
+            items.append(
+                DoctorItem(
+                    label=label,
+                    actions=["create worktree", "delete branch", "force delete branch"],
+                    kind="missing_worktree",
+                    branch=branch,
+                )
+            )
+        if not items:
+            print("No issues found")
+            return
+        selection = run_doctor(items)
+        if selection is None:
+            return
+        current = git.get_current_worktree(self.repo_root, self.cwd)
+        deleted_current = False
+        for item in selection:
+            action = item.actions[item.selected]
+            if item.kind == "stale_worktree" and action == "delete worktree" and item.path:
+                try:
+                    git.remove_worktree(self.repo_root, item.path)
+                    if current and self._is_current_path(item.path):
+                        deleted_current = True
+                except git.GitError as exc:
+                    print(f"Failed to delete {item.path}: {exc}", file=sys.stderr)
+            elif item.kind == "missing_worktree" and item.branch:
+                if action == "create worktree":
+                    path = self.repo_root / item.branch
+                    try:
+                        git.create_worktree_for_branch(self.repo_root, item.branch, path)
+                        run_post_worktree_creation(self.repo_root, path)
+                    except git.GitError as exc:
+                        print(f"Failed to create worktree for {item.branch}: {exc}", file=sys.stderr)
+                elif action == "delete branch":
+                    try:
+                        git.delete_branch(self.repo_root, item.branch, force=True)
+                    except git.GitError as exc:
+                        print(f"Failed to delete branch {item.branch}: {exc}", file=sys.stderr)
+                elif action == "force delete branch":
+                    try:
+                        git.delete_branch(self.repo_root, item.branch, force=True)
+                    except git.GitError as exc:
+                        print(f"Failed to delete branch {item.branch}: {exc}", file=sys.stderr)
+        if deleted_current:
+            print(self._main_path())
 
     def _refresh_statuses(self) -> list[WorktreeStatus]:
         try:

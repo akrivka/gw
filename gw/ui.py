@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import datetime as dt
+import sys
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 import questionary
+from prompt_toolkit.application import Application
 from prompt_toolkit.completion import FuzzyCompleter, WordCompleter
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.shortcuts import prompt
 
-from .models import WorktreeStatus
+from .models import DoctorItem, WorktreeStatus
 
 
 BRANCH_WIDTH = 40
@@ -181,3 +188,75 @@ def render_table_lines(
 
 def render_table(statuses: Iterable[WorktreeStatus]) -> str:
     return "\n".join(render_table_lines(statuses))
+
+
+@dataclass
+class _DoctorState:
+    cursor: int = 0
+
+
+def run_doctor(items: list[DoctorItem]) -> list[DoctorItem] | None:
+    if not items:
+        return []
+    if not sys.stdout.isatty() or not sys.stdin.isatty():
+        for item in items:
+            action = item.actions[item.selected]
+            print(f"{item.label} [{action}]")
+        return None
+
+    state = _DoctorState()
+
+    def _render() -> str:
+        lines = [
+            "Use up/down to select, left/right to change action, enter to apply, esc to cancel.",
+            "",
+        ]
+        for idx, item in enumerate(items):
+            prefix = "> " if idx == state.cursor else "  "
+            action = item.actions[item.selected]
+            lines.append(f"{prefix}{item.label} [{action}]")
+        return "\n".join(lines)
+
+    control = FormattedTextControl(text=_render, focusable=True)
+    window = Window(content=control, always_hide_cursor=True)
+    layout = Layout(window)
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    def _up(event) -> None:  # type: ignore[no-untyped-def]
+        if state.cursor > 0:
+            state.cursor -= 1
+            event.app.invalidate()
+
+    @kb.add("down")
+    def _down(event) -> None:  # type: ignore[no-untyped-def]
+        if state.cursor < len(items) - 1:
+            state.cursor += 1
+            event.app.invalidate()
+
+    @kb.add("left")
+    def _left(event) -> None:  # type: ignore[no-untyped-def]
+        item = items[state.cursor]
+        if len(item.actions) > 1:
+            item.selected = (item.selected - 1) % len(item.actions)
+            event.app.invalidate()
+
+    @kb.add("right")
+    def _right(event) -> None:  # type: ignore[no-untyped-def]
+        item = items[state.cursor]
+        if len(item.actions) > 1:
+            item.selected = (item.selected + 1) % len(item.actions)
+            event.app.invalidate()
+
+    @kb.add("enter")
+    def _enter(event) -> None:  # type: ignore[no-untyped-def]
+        event.app.exit(result=items)
+
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _cancel(event) -> None:  # type: ignore[no-untyped-def]
+        event.app.exit(result=None)
+
+    app = Application(layout=layout, key_bindings=kb, full_screen=True)
+    return app.run()

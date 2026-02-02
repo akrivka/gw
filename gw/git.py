@@ -109,6 +109,26 @@ def get_default_branch(repo_root: Path) -> str:
     return "main"
 
 
+def is_bare_repo(repo_root: Path) -> bool:
+    try:
+        out = _run_git(["-C", str(repo_root), "rev-parse", "--is-bare-repository"])
+    except GitError:
+        return False
+    return out.strip().lower() == "true"
+
+
+def is_working_tree_clean(repo_root: Path) -> bool:
+    try:
+        out = _run_git(["-C", str(repo_root), "status", "--porcelain"])
+    except GitError:
+        return False
+    return not out.strip()
+
+
+def clone_bare(source: Path, dest: Path) -> None:
+    _run_cmd(["git", "clone", "--bare", str(source), str(dest)])
+
+
 def sync_repo(repo_root: Path) -> None:
     _run_git(["-C", str(repo_root), "fetch", "--all", "--prune"])
 
@@ -256,6 +276,25 @@ def branch_exists(repo_root: Path, branch: str) -> bool:
         return False
 
 
+def list_local_branches(repo_root: Path) -> list[str]:
+    out = _run_git(
+        [
+            "-C",
+            str(repo_root),
+            "for-each-ref",
+            "refs/heads",
+            "--format=%(refname:short)",
+        ]
+    )
+    branches = [line.strip() for line in out.splitlines() if line.strip()]
+    return branches
+
+
+def delete_branch(repo_root: Path, branch: str, force: bool = False) -> None:
+    flag = "-D" if force else "-d"
+    _run_git(["-C", str(repo_root), "branch", flag, branch])
+
+
 def rename_branch(repo_root: Path, old: str, new: str) -> None:
     _run_git(["-C", str(repo_root), "branch", "-m", old, new])
 
@@ -263,6 +302,11 @@ def rename_branch(repo_root: Path, old: str, new: str) -> None:
 def move_worktree(repo_root: Path, old_path: Path, new_path: Path) -> None:
     new_path.parent.mkdir(parents=True, exist_ok=True)
     _run_git(["-C", str(repo_root), "worktree", "move", str(old_path), str(new_path)])
+
+
+def create_worktree_for_branch(repo_root: Path, branch: str, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _run_git(["-C", str(repo_root), "worktree", "add", str(path), branch])
 
 
 def branches_merged_into(repo_root: Path, target: str, branches: Iterable[str]) -> list[str]:
