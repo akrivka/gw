@@ -10,17 +10,46 @@ from prompt_toolkit.shortcuts import prompt
 from .models import WorktreeStatus
 
 
+def _format_relative_commit_age(last_commit_ts: int) -> str:
+    if not last_commit_ts:
+        return "unknown"
+    now = dt.datetime.now()
+    ts = dt.datetime.fromtimestamp(last_commit_ts)
+    delta = now - ts
+    if delta.total_seconds() < 0:
+        return "just now"
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 60:
+        minutes = max(1, minutes)
+        unit = "minute" if minutes == 1 else "minutes"
+        return f"{minutes} {unit} ago"
+    hours = minutes // 60
+    if hours < 24:
+        unit = "hour" if hours == 1 else "hours"
+        return f"{hours} {unit} ago"
+    days = hours // 24
+    if days < 7:
+        unit = "day" if days == 1 else "days"
+        return f"{days} {unit} ago"
+    weeks = days // 7
+    if days < 30:
+        unit = "week" if weeks == 1 else "weeks"
+        return f"{weeks} {unit} ago"
+    months = days // 30
+    unit = "month" if months == 1 else "months"
+    return f"{months} {unit} ago"
+
+
 def format_status(status: WorktreeStatus) -> str:
     branch = status.branch or "(detached)"
-    ts = dt.datetime.fromtimestamp(status.last_commit_ts) if status.last_commit_ts else None
-    ts_str = ts.strftime("%Y-%m-%d %H:%M") if ts else "unknown"
+    ts_str = _format_relative_commit_age(status.last_commit_ts)
     if status.upstream:
         ahead = status.ahead if status.ahead is not None else "?"
         behind = status.behind if status.behind is not None else "?"
         upstream = f"{status.upstream} ↑{ahead} ↓{behind}"
     else:
         upstream = "no-upstream"
-    return f"{branch:30} {ts_str:16} {upstream:20} {status.path}"
+    return f"{branch:30} {ts_str:20} {upstream:20} {status.path}"
 
 
 def pick_worktree(statuses: list[WorktreeStatus]) -> WorktreeStatus | None:
@@ -39,8 +68,8 @@ def confirm(text: str) -> bool:
 
 def render_table(statuses: Iterable[WorktreeStatus]) -> str:
     lines = [
-        f"{'BRANCH':30} {'LAST COMMIT':16} {'UPSTREAM':20} PATH",
-        "-" * 80,
+        f"{'BRANCH':30} {'LAST COMMIT':20} {'UPSTREAM':20} PATH",
+        "-" * 84,
     ]
     for status in statuses:
         lines.append(format_status(status))
