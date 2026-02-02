@@ -178,7 +178,7 @@ def list_pull_requests(repo_root: Path, repo: str) -> dict[str, dict[str, str | 
                 "--state",
                 "all",
                 "--json",
-                "number,title,state,url,headRefName",
+                "number,title,state,url,headRefName,baseRefName",
                 "--repo",
                 repo,
             ],
@@ -200,8 +200,33 @@ def list_pull_requests(repo_root: Path, repo: str) -> dict[str, dict[str, str | 
             "title": pr.get("title"),
             "state": pr.get("state"),
             "url": pr.get("url"),
+            "base": pr.get("baseRefName"),
         }
     return prs
+
+
+def resolve_ref(repo_root: Path, ref: str) -> str | None:
+    try:
+        _run_git(["-C", str(repo_root), "rev-parse", "--verify", ref])
+        return ref
+    except GitError:
+        return None
+
+
+def get_diff_stats(repo_root: Path, base: str, branch: str) -> tuple[int, int]:
+    out = _run_git(["-C", str(repo_root), "diff", "--numstat", f"{base}...{branch}"])
+    added = 0
+    deleted = 0
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        raw_added, raw_deleted = parts[0], parts[1]
+        if raw_added.isdigit():
+            added += int(raw_added)
+        if raw_deleted.isdigit():
+            deleted += int(raw_deleted)
+    return added, deleted
 
 
 def is_ancestor(repo_root: Path, branch: str, target: str) -> bool:

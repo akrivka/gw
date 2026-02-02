@@ -23,3 +23,7 @@ class WorktreeStatus:
     pr_title: str | None = None
     pr_state: str | None = None
     pr_url: str | None = None
+    pr_base: str | None = None
+    changes_added: int | None = None
+    changes_deleted: int | None = None
+    changes_target: str | None = None

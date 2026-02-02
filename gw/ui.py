@@ -10,6 +10,13 @@ from prompt_toolkit.shortcuts import prompt
 from .models import WorktreeStatus
 
 
+BRANCH_WIDTH = 30
+LAST_COMMIT_WIDTH = 20
+STATUS_WIDTH = 12
+CHANGES_WIDTH = 30
+PR_WIDTH = 10
+
+
 def _format_relative_commit_age(last_commit_ts: int) -> str:
     if not last_commit_ts:
         return "unknown"
@@ -40,7 +47,62 @@ def _format_relative_commit_age(last_commit_ts: int) -> str:
     return f"{months} {unit} ago"
 
 
-def format_status(status: WorktreeStatus) -> str:
+def _fit(text: str, width: int) -> str:
+    if len(text) > width:
+        if width <= 3:
+            return text[:width]
+        return f"{text[: width - 3]}..."
+    return text.ljust(width)
+
+
+def _format_status(status: WorktreeStatus) -> str:
+    ahead = status.ahead if status.ahead is not None else "?"
+    behind = status.behind if status.behind is not None else "?"
+    return f"↑{ahead} ↓{behind}"
+
+
+def _format_changes(status: WorktreeStatus) -> str:
+    if (
+        status.changes_added is None
+        or status.changes_deleted is None
+        or not status.changes_target
+    ):
+        return "n/a"
+    return f"+{status.changes_added} -{status.changes_deleted} into {status.changes_target}"
+
+
+def _format_pr_label(status: WorktreeStatus) -> str:
+    if not status.pr_number:
+        return "-"
+    return f"#{status.pr_number}"
+
+
+def _link(label: str, url: str | None) -> str:
+    if not url:
+        return label
+    return f"\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\"
+
+
+def format_table_row(status: WorktreeStatus) -> str:
+    branch = status.branch or "(detached)"
+    ts_str = _format_relative_commit_age(status.last_commit_ts)
+    status_str = _format_status(status)
+    changes = _format_changes(status)
+    pr_label = _format_pr_label(status)
+    pr_display = _fit(pr_label, PR_WIDTH)
+    pr_display = _link(pr_display, status.pr_url)
+    return " ".join(
+        [
+            _fit(branch, BRANCH_WIDTH),
+            _fit(ts_str, LAST_COMMIT_WIDTH),
+            _fit(status_str, STATUS_WIDTH),
+            _fit(changes, CHANGES_WIDTH),
+            pr_display,
+        ]
+    )
+
+
+def format_pick_label(status: WorktreeStatus) -> str:
     branch = status.branch or "(detached)"
     ts_str = _format_relative_commit_age(status.last_commit_ts)
     if status.upstream:
@@ -62,7 +124,7 @@ def format_status(status: WorktreeStatus) -> str:
 def pick_worktree(statuses: list[WorktreeStatus]) -> WorktreeStatus | None:
     if not statuses:
         return None
-    labels = [format_status(s) for s in statuses]
+    labels = [format_pick_label(s) for s in statuses]
     mapping = {label: status for label, status in zip(labels, statuses)}
     completer = FuzzyCompleter(WordCompleter(labels, ignore_case=True))
     selection = prompt("Worktree: ", completer=completer)
@@ -75,9 +137,17 @@ def confirm(text: str) -> bool:
 
 def render_table(statuses: Iterable[WorktreeStatus]) -> str:
     lines = [
-        f"{'BRANCH':30} {'LAST COMMIT':20} {'UPSTREAM':20} {'PR':32} PATH",
-        "-" * 118,
+        " ".join(
+            [
+                _fit("BRANCH", BRANCH_WIDTH),
+                _fit("LAST COMMIT", LAST_COMMIT_WIDTH),
+                _fit("STATUS", STATUS_WIDTH),
+                _fit("CHANGES", CHANGES_WIDTH),
+                _fit("PR", PR_WIDTH),
+            ]
+        ),
+        "-" * (BRANCH_WIDTH + LAST_COMMIT_WIDTH + STATUS_WIDTH + CHANGES_WIDTH + PR_WIDTH + 4),
     ]
     for status in statuses:
-        lines.append(format_status(status))
+        lines.append(format_table_row(status))
     return "\n".join(lines)

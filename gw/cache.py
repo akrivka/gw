@@ -31,6 +31,10 @@ class Cache:
                 pr_title TEXT,
                 pr_state TEXT,
                 pr_url TEXT,
+                pr_base TEXT,
+                changes_added INTEGER,
+                changes_deleted INTEGER,
+                changes_target TEXT,
                 updated_at INTEGER
             )
             """
@@ -41,6 +45,10 @@ class Cache:
                 "pr_title": "TEXT",
                 "pr_state": "TEXT",
                 "pr_url": "TEXT",
+                "pr_base": "TEXT",
+                "changes_added": "INTEGER",
+                "changes_deleted": "INTEGER",
+                "changes_target": "TEXT",
             }
         )
         self._conn.commit()
@@ -58,7 +66,11 @@ class Cache:
                 pr_number,
                 pr_title,
                 pr_state,
-                pr_url
+                pr_url,
+                pr_base,
+                changes_added,
+                changes_deleted,
+                changes_target
             FROM worktrees
             """
         )
@@ -75,6 +87,10 @@ class Cache:
                 pr_title=row[7],
                 pr_state=row[8],
                 pr_url=row[9],
+                pr_base=row[10],
+                changes_added=row[11],
+                changes_deleted=row[12],
+                changes_target=row[13],
             )
             for row in rows
         ]
@@ -94,9 +110,13 @@ class Cache:
                 pr_title,
                 pr_state,
                 pr_url,
+                pr_base,
+                changes_added,
+                changes_deleted,
+                changes_target,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 branch=excluded.branch,
                 last_commit_ts=excluded.last_commit_ts,
@@ -107,6 +127,10 @@ class Cache:
                 pr_title=excluded.pr_title,
                 pr_state=excluded.pr_state,
                 pr_url=excluded.pr_url,
+                pr_base=excluded.pr_base,
+                changes_added=excluded.changes_added,
+                changes_deleted=excluded.changes_deleted,
+                changes_target=excluded.changes_target,
                 updated_at=excluded.updated_at
             """,
             [
@@ -121,6 +145,10 @@ class Cache:
                     s.pr_title,
                     s.pr_state,
                     s.pr_url,
+                    s.pr_base,
+                    s.changes_added,
+                    s.changes_deleted,
+                    s.changes_target,
                     now,
                 )
                 for s in statuses

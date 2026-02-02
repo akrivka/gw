@@ -130,6 +130,7 @@ class App:
         if github_repo:
             pr_by_branch = git.list_pull_requests(self.repo_root, github_repo)
         worktrees = git.list_worktrees(self.repo_root)
+        default_branch = git.get_default_branch(self.repo_root)
         statuses: list[WorktreeStatus] = []
         for wt in worktrees:
             last_commit = git.get_last_commit_ts(wt.path)
@@ -141,6 +142,26 @@ class App:
                 except git.GitError:
                     ahead = behind = None
             pr_info = pr_by_branch.get(wt.branch or "") if wt.branch else None
+            pr_base = pr_info.get("base") if pr_info else None
+            changes_added = changes_deleted = None
+            changes_target = None
+            if wt.branch:
+                target_label = pr_base or (
+                    "main" if git.resolve_ref(self.repo_root, "main") else default_branch
+                )
+                target_ref = (
+                    git.resolve_ref(self.repo_root, target_label)
+                    or git.resolve_ref(self.repo_root, f"origin/{target_label}")
+                    or git.resolve_ref(self.repo_root, default_branch)
+                )
+                if target_ref:
+                    try:
+                        changes_added, changes_deleted = git.get_diff_stats(
+                            self.repo_root, target_ref, wt.branch
+                        )
+                        changes_target = target_label
+                    except git.GitError:
+                        changes_added = changes_deleted = None
             statuses.append(
                 WorktreeStatus(
                     path=wt.path,
@@ -153,6 +174,10 @@ class App:
                     pr_title=pr_info.get("title") if pr_info else None,
                     pr_state=pr_info.get("state") if pr_info else None,
                     pr_url=pr_info.get("url") if pr_info else None,
+                    pr_base=pr_base,
+                    changes_added=changes_added,
+                    changes_deleted=changes_deleted,
+                    changes_target=changes_target,
                 )
             )
         self.cache.upsert_worktrees(statuses)
