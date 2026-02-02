@@ -10,10 +10,10 @@ from prompt_toolkit.shortcuts import prompt
 from .models import WorktreeStatus
 
 
-BRANCH_WIDTH = 30
+BRANCH_WIDTH = 40
 LAST_COMMIT_WIDTH = 20
 STATUS_WIDTH = 12
-CHANGES_WIDTH = 30
+CHANGES_WIDTH = 38
 PR_WIDTH = 10
 
 
@@ -56,6 +56,8 @@ def _fit(text: str, width: int) -> str:
 
 
 def _format_status(status: WorktreeStatus) -> str:
+    if not status.upstream:
+        return ""
     ahead = status.ahead if status.ahead is not None else "?"
     behind = status.behind if status.behind is not None else "?"
     return f"↑{ahead} ↓{behind}"
@@ -68,7 +70,9 @@ def _format_changes(status: WorktreeStatus) -> str:
         or not status.changes_target
     ):
         return "n/a"
-    return f"+{status.changes_added} -{status.changes_deleted} into {status.changes_target}"
+    added = str(status.changes_added).ljust(5)
+    deleted = str(status.changes_deleted).ljust(5)
+    return f"+{added} -{deleted} into {status.changes_target}"
 
 
 def _format_pr_label(status: WorktreeStatus) -> str:
@@ -80,7 +84,7 @@ def _format_pr_label(status: WorktreeStatus) -> str:
 def _link(label: str, url: str | None) -> str:
     if not url:
         return label
-    return f"\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\"
+    return f"\x1b[4m\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\\x1b[24m"
 
 
 def format_table_row(status: WorktreeStatus) -> str:
@@ -141,7 +145,7 @@ def render_table(statuses: Iterable[WorktreeStatus]) -> str:
             [
                 _fit("BRANCH", BRANCH_WIDTH),
                 _fit("LAST COMMIT", LAST_COMMIT_WIDTH),
-                _fit("STATUS", STATUS_WIDTH),
+                _fit("UPSTREAM", STATUS_WIDTH),
                 _fit("CHANGES", CHANGES_WIDTH),
                 _fit("PR", PR_WIDTH),
             ]
