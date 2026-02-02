@@ -89,7 +89,7 @@ def _link(label: str, url: str | None) -> str:
     return f"\x1b[4m\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\\x1b[24m"
 
 
-def format_table_row(status: WorktreeStatus) -> str:
+def format_table_columns(status: WorktreeStatus) -> list[str]:
     branch = status.branch or "(detached)"
     ts_str = _format_relative_commit_age(status.last_commit_ts)
     status_str = _format_status(status)
@@ -97,15 +97,17 @@ def format_table_row(status: WorktreeStatus) -> str:
     pr_label = _format_pr_label(status)
     pr_display = _fit(pr_label, PR_WIDTH)
     pr_display = _link(pr_display, status.pr_url)
-    return " ".join(
-        [
-            _fit(branch, BRANCH_WIDTH),
-            _fit(ts_str, LAST_COMMIT_WIDTH),
-            _fit(status_str, STATUS_WIDTH),
-            _fit(changes, CHANGES_WIDTH),
-            pr_display,
-        ]
-    )
+    return [
+        _fit(branch, BRANCH_WIDTH),
+        _fit(ts_str, LAST_COMMIT_WIDTH),
+        _fit(status_str, STATUS_WIDTH),
+        _fit(changes, CHANGES_WIDTH),
+        pr_display,
+    ]
+
+
+def format_table_row(status: WorktreeStatus) -> str:
+    return " ".join(format_table_columns(status))
 
 
 def format_pick_label(status: WorktreeStatus) -> str:
@@ -150,6 +152,7 @@ def _colorize(text: str, color: str | None) -> str:
 def render_table_lines(
     statuses: Iterable[WorktreeStatus],
     row_color: str | None = None,
+    skip_branch_color: bool = False,
 ) -> list[str]:
     lines = [
         " ".join(
@@ -164,7 +167,15 @@ def render_table_lines(
         "-" * (BRANCH_WIDTH + LAST_COMMIT_WIDTH + STATUS_WIDTH + CHANGES_WIDTH + PR_WIDTH + 4),
     ]
     for status in statuses:
-        lines.append(_colorize(format_table_row(status), row_color))
+        if row_color:
+            columns = format_table_columns(status)
+            if skip_branch_color:
+                colored = [columns[0]] + [_colorize(col, row_color) for col in columns[1:]]
+            else:
+                colored = [_colorize(col, row_color) for col in columns]
+            lines.append(" ".join(colored))
+        else:
+            lines.append(format_table_row(status))
     return lines
 
 
