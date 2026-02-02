@@ -15,6 +15,8 @@ LAST_COMMIT_WIDTH = 20
 STATUS_WIDTH = 12
 CHANGES_WIDTH = 38
 PR_WIDTH = 10
+ANSI_RESET = "\x1b[0m"
+ANSI_CACHED = "\x1b[38;5;245m"
 
 
 def _format_relative_commit_age(last_commit_ts: int) -> str:
@@ -139,7 +141,16 @@ def confirm(text: str) -> bool:
     return bool(questionary.confirm(text, default=False).unsafe_ask())
 
 
-def render_table(statuses: Iterable[WorktreeStatus]) -> str:
+def _colorize(text: str, color: str | None) -> str:
+    if not color:
+        return text
+    return f"{color}{text}{ANSI_RESET}"
+
+
+def render_table_lines(
+    statuses: Iterable[WorktreeStatus],
+    row_color: str | None = None,
+) -> list[str]:
     lines = [
         " ".join(
             [
@@ -153,5 +164,9 @@ def render_table(statuses: Iterable[WorktreeStatus]) -> str:
         "-" * (BRANCH_WIDTH + LAST_COMMIT_WIDTH + STATUS_WIDTH + CHANGES_WIDTH + PR_WIDTH + 4),
     ]
     for status in statuses:
-        lines.append(format_table_row(status))
-    return "\n".join(lines)
+        lines.append(_colorize(format_table_row(status), row_color))
+    return lines
+
+
+def render_table(statuses: Iterable[WorktreeStatus]) -> str:
+    return "\n".join(render_table_lines(statuses))
