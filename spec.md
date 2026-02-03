@@ -22,28 +22,41 @@ my_repo/
   ...
 ```
 
-Each folder contains a worktree for that branch. **Each branch will ALWAYS have a worktree associated with it.** See "Reasoning for branch-worktree 1:1 mapping" for more details. From now on, we'll refer to worktree, but actually mean the worktree-branch pair.
+Each folder contains a worktree for that branch. **Every branch will ALWAYS have a worktree associated with it.** See "Reasoning for branch-worktree 1:1 mapping" below for more details. From now on, we'll refer to worktree, but actually mean the branch-worktree pair.
 
 Whenever `gw` is run from anywhere within this folder, it should deduce that it is working on `my_repo`.
 
+### UI
+
+Just running `gw` should show a list of worktrees that looks roughly like this:
+
+```
+BRANCH NAME       | LAST COMMIT                            | PULL/PUSH                             | PULL REQUEST*1       | BEHIND|AHEAD | CHANGES     | CHECKS
+full branch name  | X minutes/hours/days/weeks/months ago  | X↓ Y↑ (dirty - if uncommited changes) | #1234 (clickable)*2  |      B|A     | +656  -10   | ✅/❌/⏳ M / N
+*1: detect if PR was merged and upstream branch deleted, if yes, say it clearly in the these (and previous) columns (important, because we'll want to periodically delete merged branches)
+*2: show target branch name if different from default branch
+... (sorted by LAST COMMIT)
+```
+
+The list should be navigateable by Up/Down arrow keys, and there should be commands available for the selected worktree.
+
 ### Commands
 
-* `gw` - fuzzy search through all worktrees in current repo, sorted by recency, `cd` into it on enter
-* `gw list` - list all worktrees, including extra information like upstream branch status (diff, behind/ahead, PR)
-* `gw info` - shows info about the current worktree, if in one
-* `gw init` - creates the gw folder structure for the current repo (assuming it's a "normal" clone), shows a big and clear prompt that this is a destructive operation that will move the current clone into `main/` probably and create worktrees for all local branches (achieving the invariant)
-* `gw new [branch-name]` - create a new branch and worktree for it, `cd` into it
-* `gw delete` - fuzzy search to delete a worktree, use confirm dialog, `cd` into main if current worktree is deleted
-* `gw delete .` - delete current worktree, use confirm dialog, `cd` into main
-* `gw delete merged` - delete all worktrees whose branches have been merged into main on the upstream, use confirm dialog, `cd` into main if current worktree is deleted
-* `gw delete no-upstream` - delete all worktrees whose branches have no upstream set, use confirm dialog, `cd` into main if current worktree is deleted
-* `gw rename [new-branch-name]` - rename current worktree and branch
-* `gw rename [old-branch-name] [new-branch-name]` - rename specified worktree and branch
-* `gw doctor` - checks all worktrees without a branch and all branches without a worktree, shows a list navigatable by arrow keys, which for each transgression lets you cycle through options for what to do with it: for stale worktrees, there seems to be only one option (delete them), for branches without worktrees, cycle between deleting the branches and creating the worktree, enter should execute the changes
+* <Enter>: `cd` into that worktree, exit `gw`
+* D: delete this worktree, and the associated folder and branch, include confirmation dialog
+* R: rename the current worktree (both the branch and the folder)
+* n: create a new worktee-branch, always base it off of the default branch, run hooks after creation, check upstream if branch with that name is already present, if so, fetch it instead of creating it anew
+* p: pull the branch
+* P: push the branch
+* r: refetch all info
 
 ### Sync and caching
 
-`gw` should sync all necessary info on each command (`git fetch` etc.). It should cache all information in a per-repo SQLite DB in a user cache dir (e.g. `~/.cache/gw/<repo-id>.sqlite`), with WAL enabled for concurrent reads. Each command should show cached information immediatelly and show loading states for anything that needs to be updated.
+`gw` should cache all necessary info in a per-repo SQLite DB in a user cache dir (e.g. `~/.cache/gw/<repo-id>.sqlite`), with WAL enabled for concurrent reads. Before showing the `gw` screen, it should refresh all locally-obtainable info (git commands that don't hit the upstream). Then, it should show cached fields in light gray, and start refetching from upstream (git server, GitHub) in the background, making them white when they've been validated.
+
+### Health checking
+
+Before the `gw` screen, it should also try to detect any inconsistencies that might be present in the local git repo or folder structure. If there are any branches without worktrees or worktrees without branches, show a separate screen saying something like "Detected issue with gw setup..." and an overview of what it's going to do: worktrees without branches will be deleted, branches without worktrees will get worktrees created; and a confirmation dialog.
 
 ### Hooks
 
@@ -64,43 +77,33 @@ Example:
 }
 ```
 
-## Architecture overview
+You should be able to add a hook with `gw hooks add "<cmd>"` to the local config file.
 
-### High-level components
+### `gw init`
 
-1) **CLI (Click)**: parsing, prompts, output.
-2) **Application layer**: command orchestration and invariants.
-3) **Git service (pygit2)**: repo/worktree/branch operations and sync.
-4) **Cache (SQLite)**: per-repo data with WAL, read-first then refresh.
-5) **Hooks**: `.gw/settings.json` post-create commands.
-6) **UI adapters**: fuzzy picker + minimal loading states.
+There should be an additional command, `gw init`, that initializes the folder structure of the current git repo to be `gw`-compliant. If `gw` is run in a non-compliant git repo structure (non-recoverable via health checking/doctoring^), it should just instruct the user to run `gw init` first. `gw init` should clearly outline what it's going to do (delete tha main clone, keep just the bare repo in the top-level folder, create worktrees for all local branches).
 
-### Data flow (typical command)
+### VCS providers
 
-CLI → app → cache read → sync via pygit2 → cache update → render.
+`gw` will integrate with only GitHub via the `gh` CLI command. 
 
-### Project layout (proposed)
 
-```
-gw/
-  gw/
-    __init__.py
-    cli.py            # click entry points
-    app.py            # command orchestration
-    git.py            # subprocess wrapper
-    cache.py          # sqlite storage
-    hooks.py          # settings.json hooks
-    ui.py             # formatting + fuzzy selection
-    models.py         # dataclasses/typing
-  tests/
-  pyproject.toml
-```
+## Implementation plan
 
-### Tooling
+(I already have a gw-compliant repo structure.)
+
+1. [ ] Just the basic `gw` screen with only the <Enter> command. No caching. Omit the PR columns that hit the GitHub API.
+2. [ ] Add the remaining columns, caching and lazy-updating. Make sure to adhere to the spec closely here.
+3. [ ] Add the remaining commands.
+4. [ ] Add hooks support.
+5. [ ] Add the health checking/doctoring before startup and the `gw` init command.
+
+## Tooling
 
 - **uv** for project management, virtualenvs, and dependency resolution.
 - **ruff** for lint + format.
 - **ty** for static type checks.
+- **click** for CLI.
 
 ## Appendix
 
