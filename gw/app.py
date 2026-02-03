@@ -25,10 +25,75 @@ class App:
         self.cache = Cache(repo_root, Path.home() / ".cache" / "gw")
         self.cwd = cwd
 
-    def list_worktrees(self, show_cached: bool = True) -> None:
+    def load_cached_statuses(self) -> list[WorktreeStatus]:
+        return self.cache.load_worktrees()
+
+    def list_worktrees(self) -> list[git.Worktree]:
+        return git.list_worktrees(self.repo_root)
+
+    def refresh_statuses_local_stream(
+        self,
+        worktrees: list[git.Worktree],
+        on_update: Callable[[WorktreeStatus], None],
+        current: dict[Path, WorktreeStatus] | None = None,
+    ) -> dict[Path, WorktreeStatus]:
+        return self._refresh_statuses_local_stream(worktrees, on_update, current)
+
+    def refresh_statuses_remote_stream(
+        self,
+        worktrees: list[git.Worktree],
+        current: dict[Path, WorktreeStatus],
+        on_update: Callable[[WorktreeStatus], None],
+    ) -> dict[Path, WorktreeStatus]:
+        return self._refresh_statuses_remote_stream(worktrees, current, on_update)
+
+    def create_worktree(self, branch: str) -> Path:
+        path = self.repo_root / branch
+        git.create_worktree(self.repo_root, branch, path)
+        run_post_worktree_creation(self.repo_root, path)
+        return path
+
+    def rename_worktree(self, old_branch: str, new_branch: str) -> Path:
+        worktrees = git.list_worktrees(self.repo_root)
+        match = next((wt for wt in worktrees if wt.branch == old_branch), None)
+        if match is None:
+            raise git.GitError(f"Unknown branch '{old_branch}'")
+        new_path = self.repo_root / new_branch
+        git.rename_branch(self.repo_root, old_branch, new_branch)
+        git.move_worktree(self.repo_root, match.path, new_path)
+        return new_path
+
+    def delete_worktrees(self, paths: list[Path]) -> None:
+        errors: list[str] = []
+        for path in paths:
+            if not path.exists():
+                continue
+            try:
+                git.remove_worktree(self.repo_root, path)
+            except git.GitError as exc:
+                errors.append(f"{path}: {exc}")
+        if errors:
+            raise git.GitError("; ".join(errors))
+
+    def upsert_cached_statuses(self, statuses: Iterable[WorktreeStatus]) -> None:
+        Cache(self.repo_root, self.cache.cache_root).upsert_worktrees(statuses)
+
+    def is_current_path(self, path: Path) -> bool:
+        return self._is_current_path(path)
+
+    def delete_worktree_and_branch(self, path: Path, branch: str | None) -> None:
+        if path.exists():
+            git.remove_worktree(self.repo_root, path)
+        if branch:
+            default_branch = git.get_default_branch(self.repo_root)
+            if branch == default_branch:
+                raise git.GitError(f"Refusing to delete default branch '{default_branch}'")
+            git.delete_branch(self.repo_root, branch, force=False)
+
+    def list_worktrees_cmd(self, show_cached: bool = True) -> None:
         cached = self.cache.load_worktrees()
         if show_cached and cached and sys.stdout.isatty():
-            worktrees = git.list_worktrees(self.repo_root)
+            worktrees = self.list_worktrees()
             if not worktrees:
                 print(render_table([]))
                 return
@@ -74,24 +139,28 @@ class App:
                 self._rewrite_table_line(line_idx, line, line_count)
 
             try:
-                local_statuses = self._refresh_statuses_local_stream(
+                local_statuses = self.refresh_statuses_local_stream(
                     row_order,
                     update_row,
                     statuses_by_path,
                 )
                 statuses_by_path.update(local_statuses)
 
-                remote_statuses = self._refresh_statuses_remote_stream(
+                remote_statuses = self.refresh_statuses_remote_stream(
                     row_order,
                     statuses_by_path,
                     update_row,
                 )
                 statuses_by_path.update(remote_statuses)
+            except git.GitError as exc:
+                print(f"git fetch failed: {exc}", file=sys.stderr)
             finally:
                 refresh_stop.set()
                 refresh_thread.join(timeout=1)
 
-            final_statuses = [statuses_by_path[wt.path] for wt in row_order if wt.path in statuses_by_path]
+            final_statuses = [
+                statuses_by_path[wt.path] for wt in row_order if wt.path in statuses_by_path
+            ]
             self.cache.upsert_worktrees(final_statuses)
             return
 
@@ -121,9 +190,7 @@ class App:
             print(selection.path)
 
     def new_worktree(self, branch: str) -> None:
-        path = self.repo_root / branch
-        git.create_worktree(self.repo_root, branch, path)
-        run_post_worktree_creation(self.repo_root, path)
+        path = self.create_worktree(branch)
         self._refresh_statuses()
         print(path)
 
@@ -184,9 +251,7 @@ class App:
                 return
             old_branch = status.branch or old
             old_path = status.path
-        new_path = self.repo_root / new
-        git.rename_branch(self.repo_root, old_branch, new)
-        git.move_worktree(self.repo_root, old_path, new_path)
+        new_path = self.rename_worktree(old_branch, new)
         self._refresh_statuses()
         if self._is_current_path(old_path):
             print(new_path)
@@ -631,10 +696,7 @@ class App:
         current: dict[Path, WorktreeStatus],
         on_update: Callable[[WorktreeStatus], None],
     ) -> dict[Path, WorktreeStatus]:
-        try:
-            git.sync_repo(self.repo_root)
-        except git.GitError as exc:
-            print(f"git fetch failed: {exc}", file=sys.stderr)
+        git.sync_repo(self.repo_root)
         github_repo = git.get_github_repo(self.repo_root)
         pr_by_branch: dict[str, dict[str, str | int]] = {}
         if github_repo:
@@ -697,11 +759,10 @@ class App:
 
         if not confirm("Proceed?"):
             return
-        for path in paths:
-            try:
-                git.remove_worktree(self.repo_root, path)
-            except git.GitError as exc:
-                print(f"Failed to delete {path}: {exc}", file=sys.stderr)
+        try:
+            self.delete_worktrees(list(paths))
+        except git.GitError as exc:
+            print(f"Failed to delete worktrees: {exc}", file=sys.stderr)
 
     def _main_path(self) -> Path:
         return self.repo_root / git.get_default_branch(self.repo_root)

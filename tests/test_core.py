@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from gw.app import App
 from gw.cache import Cache
 from gw.git import get_repo_root, list_worktrees
 from gw.models import WorktreeStatus
 
+GIT_AVAILABLE = subprocess.run(["git", "--version"], capture_output=True).returncode == 0
 
 def _run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
@@ -28,9 +30,7 @@ def _init_repo(root: Path) -> tuple[Path, Path]:
     return root, main_path
 
 
-@pytest.mark.skipif(
-    subprocess.run(["git", "--version"], capture_output=True).returncode != 0, reason="git missing"
-)
+@pytest.mark.skipif(not GIT_AVAILABLE, reason="git missing")
 def test_repo_root_and_worktrees(tmp_path: Path) -> None:
     root, main_path = _init_repo(tmp_path / "repo")
     _run(["git", "--git-dir=.git", "worktree", "add", "-b", "feature", "feature"], cwd=root)
@@ -57,3 +57,16 @@ def test_cache_roundtrip(tmp_path: Path) -> None:
     loaded = cache.load_worktrees()
     assert loaded[0].branch == "main"
     assert loaded[0].ahead == 1
+
+
+@pytest.mark.skipif(not GIT_AVAILABLE, reason="git missing")
+def test_app_worktree_helpers(tmp_path: Path) -> None:
+    root, main_path = _init_repo(tmp_path / "repo")
+    app = App(main_path)
+    path = app.create_worktree("feature")
+    assert path.exists()
+    new_path = app.rename_worktree("feature", "feature-renamed")
+    assert new_path.exists()
+    assert not path.exists()
+    app.delete_worktrees([new_path])
+    assert not new_path.exists()
