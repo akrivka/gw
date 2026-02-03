@@ -95,7 +95,7 @@ There should be an additional command, `gw init`, that initializes the folder st
 
 (I already have a gw-compliant repo structure.)
 
-1. [ ] Just the basic `gw` screen with only the <Enter> command. No caching. Omit the PR columns that hit the GitHub API.
+1. [ x ] Just the basic `gw` screen with only the <Enter> command. No caching. Omit the PR columns that hit the GitHub API.
 2. [ ] Add the remaining columns, caching and lazy-updating. Make sure to adhere to the spec closely here.
 3. [ ] Add the remaining commands.
 4. [ ] Add hooks support.

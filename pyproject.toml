@@ -1,0 +1,15 @@
+[project]
+name = "gw"
+version = "0.1.0"
+description = "Git worktree manager"
+requires-python = ">=3.11"
+dependencies = ["click>=8.1"]
+
+[project.scripts]
+gw = "gw.cli:main"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+quote-style = "double"
