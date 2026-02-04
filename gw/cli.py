@@ -133,7 +133,7 @@ def _cache_key(branch: str, head: str) -> str:
 
 
 def _get_repo_root() -> str:
-    common_dir = _run_git(["rev-parse", "--git-common-dir"])
+    common_dir = os.path.abspath(_run_git(["rev-parse", "--git-common-dir"]))
     if os.path.basename(common_dir) == ".git":
         return os.path.dirname(common_dir)
     return common_dir
@@ -175,6 +175,61 @@ def _default_branch(repo_root: str) -> str:
     if ref:
         return ref.split("/", 1)[1]
     return "main"
+
+
+def _is_bare_repo(repo_root: str) -> bool:
+    return _run_git(["rev-parse", "--is-bare-repository"], cwd=repo_root).strip() == "true"
+
+
+def _list_local_branches(repo_root: str) -> list[str]:
+    out = _run_git(["for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd=repo_root)
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _worktree_branch_map(repo_root: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for path, branch, _head in _parse_worktrees():
+        if branch and branch != "(detached)":
+            mapping[branch] = path
+    return mapping
+
+
+def _ensure_clean_worktree(repo_root: str) -> None:
+    status = _run_git(["status", "--porcelain"], cwd=repo_root)
+    if status.strip():
+        raise RuntimeError("working tree has uncommitted or untracked changes")
+
+
+def _entries_to_preserve(repo_root: str, worktree_paths: Iterable[str]) -> set[str]:
+    keep = {".git", ".gw"}
+    for path in worktree_paths:
+        if os.path.abspath(path) == os.path.abspath(repo_root):
+            continue
+        try:
+            common = os.path.commonpath([repo_root, path])
+        except ValueError:
+            continue
+        if common != os.path.abspath(repo_root):
+            continue
+        rel = os.path.relpath(path, repo_root)
+        top = rel.split(os.sep, 1)[0]
+        if top:
+            keep.add(top)
+    return keep
+
+
+def _clear_repo_root(repo_root: str, keep_entries: set[str]) -> None:
+    for entry in os.listdir(repo_root):
+        if entry in keep_entries:
+            continue
+        path = os.path.join(repo_root, entry)
+        try:
+            if os.path.islink(path) or os.path.isfile(path):
+                os.remove(path)
+            else:
+                shutil.rmtree(path)
+        except FileNotFoundError:
+            continue
 
 
 def _count_ahead_behind(repo_root: str, left: str, right: str) -> tuple[int, int]:
@@ -1035,6 +1090,106 @@ def main(ctx: click.Context) -> None:
                 handle.write(selected_path)
         else:
             click.echo(selected_path)
+
+
+@main.command("init")
+def init_repo() -> None:
+    """Initialize the current repo into a gw-compliant layout."""
+    try:
+        repo_root = _get_repo_root()
+    except subprocess.CalledProcessError:
+        click.echo("gw init: not inside a git repository", err=True)
+        raise SystemExit(1)
+
+    is_bare = _is_bare_repo(repo_root)
+    branches = _list_local_branches(repo_root)
+    if not branches:
+        click.echo("gw init: no local branches found", err=True)
+        raise SystemExit(1)
+
+    worktree_map = _worktree_branch_map(repo_root)
+
+    def _conflicting_paths(branches_to_add: Iterable[str]) -> list[str]:
+        conflicts: list[str] = []
+        for branch in branches_to_add:
+            target = os.path.join(repo_root, branch)
+            if os.path.exists(target) and branch not in worktree_map:
+                conflicts.append(branch)
+        return conflicts
+
+    if is_bare:
+        missing = [branch for branch in branches if branch not in worktree_map]
+        conflicts = _conflicting_paths(missing)
+        if conflicts:
+            click.echo(
+                "gw init: cannot create worktrees; paths already exist: "
+                + ", ".join(conflicts),
+                err=True,
+            )
+            raise SystemExit(1)
+        click.echo(f"gw init will initialize worktrees under {repo_root}")
+        if missing:
+            click.echo(f"- create worktrees for {len(missing)} local branches")
+        else:
+            click.echo("- no new worktrees to create")
+        if not click.confirm("Continue?", default=False):
+            click.echo("gw init: cancelled")
+            return
+        for branch in missing:
+            target = os.path.join(repo_root, branch)
+            _ensure_worktree_parent(target)
+            _run_git(["worktree", "add", target, branch], cwd=repo_root)
+        click.echo("gw init: done")
+        return
+
+    try:
+        _ensure_clean_worktree(repo_root)
+    except RuntimeError as exc:
+        click.echo(f"gw init: {exc}", err=True)
+        raise SystemExit(1)
+
+    root_branch_paths = {
+        branch
+        for branch, path in worktree_map.items()
+        if os.path.abspath(path) == os.path.abspath(repo_root)
+    }
+    missing = [
+        branch
+        for branch in branches
+        if branch not in worktree_map or branch in root_branch_paths
+    ]
+
+    worktree_paths = [path for path, _branch, _head in _parse_worktrees()]
+    keep_entries = _entries_to_preserve(repo_root, worktree_paths)
+    conflicts = _conflicting_paths(missing)
+    if conflicts:
+        message = (
+            "gw init: cannot create worktrees; paths already exist: "
+            + ", ".join(conflicts)
+        )
+        click.echo(message, err=True)
+        raise SystemExit(1)
+
+    click.echo(f"gw init will convert {repo_root} into a gw-compliant layout:")
+    click.echo("- delete the current working tree at the repo root")
+    click.echo("- keep only the bare repo in the top-level .git directory")
+    click.echo("- ensure every local branch has a worktree")
+    if missing:
+        click.echo(f"- create {len(missing)} new worktrees under {repo_root}/<branch>")
+    preserved = sorted(entry for entry in keep_entries if entry not in {".git"})
+    if preserved:
+        click.echo(f"- preserve existing worktree paths: {', '.join(preserved)}")
+    if not click.confirm("Continue?", default=False):
+        click.echo("gw init: cancelled")
+        return
+
+    _run_git(["config", "core.bare", "true"], cwd=repo_root)
+    _clear_repo_root(repo_root, keep_entries)
+    for branch in missing:
+        target = os.path.join(repo_root, branch)
+        _ensure_worktree_parent(target)
+        _run_git(["worktree", "add", target, branch], cwd=repo_root)
+    click.echo("gw init: done")
 
 
 @main.command("shell-init")
