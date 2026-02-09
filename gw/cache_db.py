@@ -88,25 +88,42 @@ class CacheDB:
         self.repo_root = repo_root
         self.db_path = _get_db_path(repo_root)
         self._conn: sqlite3.Connection | None = None
+        self._lock_acquired = False
 
     def __enter__(self) -> Self:
-        self._conn = sqlite3.connect(str(self.db_path), timeout=5)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        _DB_LOCK.acquire()
+        self._lock_acquired = True
+        try:
+            self._conn = sqlite3.connect(str(self.db_path), timeout=5)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
 
-        db_key = str(self.db_path)
-        if db_key not in _SCHEMA_ENSURED:
-            _ensure_schema(self._conn)
-            _SCHEMA_ENSURED.add(db_key)
+            db_key = str(self.db_path)
+            if db_key not in _SCHEMA_ENSURED:
+                _ensure_schema(self._conn)
+                _SCHEMA_ENSURED.add(db_key)
 
-        return self
+            return self
+        except Exception:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+            if self._lock_acquired:
+                _DB_LOCK.release()
+                self._lock_acquired = False
+            raise
 
     def __exit__(self, *args: object) -> None:
-        if self._conn:
-            self._conn.commit()
-            self._conn.close()
-            self._conn = None
+        try:
+            if self._conn:
+                self._conn.commit()
+                self._conn.close()
+                self._conn = None
+        finally:
+            if self._lock_acquired:
+                _DB_LOCK.release()
+                self._lock_acquired = False
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -238,8 +255,3 @@ class CacheDB:
                 now,
             ),
         )
-
-
-def get_db_lock() -> threading.Lock:
-    """Get the global database lock for thread safety."""
-    return _DB_LOCK
