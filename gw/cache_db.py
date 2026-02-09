@@ -68,16 +68,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(worktree_cache)")}
-    add_cols = {
-        "additions": "INTEGER",
-        "deletions": "INTEGER",
-        "dirty": "INTEGER",
-        "changes_updated_at": "INTEGER",
-    }
-    for col, col_type in add_cols.items():
-        if col not in existing_cols:
-            conn.execute(f"ALTER TABLE worktree_cache ADD COLUMN {col} {col_type}")
     conn.commit()
 
 
