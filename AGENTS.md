@@ -2,11 +2,33 @@
 
 ## Project Structure & Module Organization
 
-- `gw/`: Python package source.
-- `gw/cli.py`: primary entry point (Click CLI + curses TUI).
-- `pyproject.toml`: project metadata and tool configuration (Ruff, script entrypoint).
-- `uv.lock`: locked dependency set for reproducible installs.
-- `spec.md`: product/spec notes; update when behavior or UX changes materially.
+```
+gw/
+├── __init__.py     # Package metadata and version
+├── __main__.py     # Enable `python -m gw`
+├── cli.py          # Click CLI entrypoint and commands (init, shell-init)
+├── models.py       # Data models (WorktreeInfo, Cell, AheadBehind, etc.)
+├── git_ops.py      # Git subprocess operations (all git commands)
+├── gh_ops.py       # GitHub CLI operations (PR and checks queries)
+├── cache_db.py     # SQLite caching with CacheDB context manager
+├── services.py     # Business logic (load_worktrees, refresh_from_upstream)
+└── tui.py          # Curses TUI (TuiApp class, rendering, input handling)
+```
+
+Other files:
+- `pyproject.toml`: project metadata and tool configuration (Ruff, script entrypoint)
+- `uv.lock`: locked dependency set for reproducible installs
+- `spec.md`: product/spec notes; update when behavior or UX changes materially
+
+### Module Responsibilities
+
+- **models.py**: Pure data structures with no dependencies. Contains `WorktreeInfo`, `Cell`, `AheadBehind`, `DiffStat`, `ParsedWorktree`.
+- **git_ops.py**: All git subprocess calls. No curses, no sqlite, no click. Functions like `run()`, `get_repo_root()`, `parse_worktrees()`, `count_ahead_behind()`, etc.
+- **gh_ops.py**: GitHub CLI operations. `get_pr_info()`, `get_checks_info()`, `classify_checks()`.
+- **cache_db.py**: SQLite persistence. `CacheDB` context manager with methods like `upsert_pr()`, `upsert_changes()`. Thread-safe with `get_db_lock()`.
+- **services.py**: Orchestration layer. `load_worktrees()` combines git + cache. `refresh_from_upstream()` updates items from remote.
+- **tui.py**: Curses UI. `TuiApp` class handles rendering and key dispatch. Helper functions for prompts and drawing.
+- **cli.py**: Click group with `main()`, `init_repo()`, `shell_init()` commands.
 
 ## Build, Test, and Development Commands
 
@@ -23,11 +45,13 @@ uv run ty check        # static type checks
 
 ## Coding Style & Naming Conventions
 
-- Python 3.11+ codebase; prefer type hints throughout.
+- Python 3.11+ codebase; type hints required throughout.
 - Indentation: 4 spaces; no tabs.
 - Formatting/linting: Ruff with `line-length = 100` and double quotes.
 - Naming: `snake_case` for functions/vars, `PascalCase` for classes, `UPPER_SNAKE_CASE` for constants.
-- Keep CLI/TUI changes cohesive: update the display logic and the underlying data fetch/caching together.
+- Use `pathlib.Path` over `str` for filesystem paths in new code.
+- Use dataclasses for structured data (prefer frozen when immutable).
+- Keep modules focused: no cross-cutting concerns (e.g., git_ops has no UI code).
 
 ## Testing Guidelines
 
