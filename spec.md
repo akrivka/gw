@@ -107,6 +107,7 @@ There should be an additional command, `gw init`, that initializes the folder st
 - **ruff** for lint + format.
 - **ty** for static type checks.
 - **click** for CLI.
+- **textual** for the interactive terminal UI.
 
 ## Appendix
 

@@ -1,15 +1,21 @@
-"""Curses TUI for gw."""
+"""Textual TUI for gw."""
 
-import curses
 import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
 
+from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Footer, Input, Static
+
 from gw import git_ops, services
-from gw.models import Cell, WorktreeInfo
+from gw.models import WorktreeInfo
 
 HEADERS = [
     "BRANCH NAME",
@@ -21,6 +27,62 @@ HEADERS = [
     "CHECKS",
 ]
 COMMAND_BAR = "Enter: open  |  n: new  |  D: delete  |  R: rename  |  p: pull  |  P: push  |  r: refresh  |  q/Esc: quit"
+SPINNER = "|/-\\"
+
+
+CSS = """
+Screen {
+    layout: vertical;
+}
+
+#command_bar {
+    padding: 0 1;
+    height: 1;
+    color: $text-muted;
+}
+
+#status_line {
+    padding: 0 1;
+    height: 1;
+}
+
+#warning_line {
+    padding: 0 1;
+    height: 1;
+    color: $warning;
+}
+
+#table {
+    height: 1fr;
+}
+
+.modal {
+    align: center middle;
+}
+
+.modal-body {
+    width: 72;
+    max-width: 90;
+    height: auto;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+.modal-title {
+    margin-bottom: 1;
+    text-style: bold;
+}
+
+.modal-hint {
+    margin-top: 1;
+    color: $text-muted;
+}
+
+.modal-input {
+    margin-top: 1;
+}
+"""
 
 
 def relative_time(ts: int) -> str:
@@ -41,8 +103,7 @@ def relative_time(ts: int) -> str:
     return f"{delta // 2629800}mo ago"
 
 
-def format_row(item: WorktreeInfo, default_branch: str) -> list[Cell]:
-    """Format a worktree item as a row of cells."""
+def _format_pull_push(item: WorktreeInfo) -> tuple[str, bool]:
     pull_push = ""
     if item.pr_state == "MERGED":
         pull_push = "merged (remote deleted)"
@@ -50,7 +111,10 @@ def format_row(item: WorktreeInfo, default_branch: str) -> list[Cell]:
         pull_push = f"{item.pull}↓ {item.push}↑"
     if item.dirty:
         pull_push = f"{pull_push} (dirty)".strip()
+    return pull_push, not item.pull_push_validated
 
+
+def _format_pr(item: WorktreeInfo, default_branch: str) -> tuple[str, bool]:
     pr = ""
     if item.pr_number is not None:
         pr_state = item.pr_state or "OPEN"
@@ -62,10 +126,14 @@ def format_row(item: WorktreeInfo, default_branch: str) -> list[Cell]:
             pr = f"#{item.pr_number}"
         if item.pr_base and item.pr_base != default_branch:
             pr = f"{pr} -> {item.pr_base}"
+    return pr, not item.pr_validated
 
-    behind_ahead = f"{item.behind}|{item.ahead}"
-    changes = f"+{item.additions} -{item.deletions}"
 
+def _format_changes(item: WorktreeInfo) -> tuple[str, bool]:
+    return f"+{item.additions} -{item.deletions}", not item.changes_validated
+
+
+def _format_checks(item: WorktreeInfo) -> tuple[str, bool]:
     checks = ""
     if item.checks_passed is not None and item.checks_total is not None:
         if item.checks_state == "fail":
@@ -76,146 +144,106 @@ def format_row(item: WorktreeInfo, default_branch: str) -> list[Cell]:
             checks = f"ok {item.checks_passed}/{item.checks_total}"
         else:
             checks = f"{item.checks_passed}/{item.checks_total}"
+    return checks, not item.checks_validated
+
+
+def format_row(item: WorktreeInfo, default_branch: str) -> list[tuple[str, bool]]:
+    """Format a worktree as displayable values with cached flags."""
+    pr, pr_cached = _format_pr(item, default_branch)
+    pull_push, pull_push_cached = _format_pull_push(item)
+    changes, changes_cached = _format_changes(item)
+    checks, checks_cached = _format_checks(item)
 
     return [
-        Cell(item.branch),
-        Cell(relative_time(item.last_commit_ts)),
-        Cell(pull_push, cached=not item.pull_push_validated),
-        Cell(pr, cached=not item.pr_validated),
-        Cell(behind_ahead),
-        Cell(changes, cached=not item.changes_validated),
-        Cell(checks, cached=not item.checks_validated),
+        (item.branch, False),
+        (relative_time(item.last_commit_ts), False),
+        (pull_push, pull_push_cached),
+        (pr, pr_cached),
+        (f"{item.behind}|{item.ahead}", False),
+        (changes, changes_cached),
+        (checks, checks_cached),
     ]
 
 
-def column_widths(rows: Iterable[list[Cell]], headers: list[str]) -> list[int]:
-    """Calculate column widths based on content."""
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for idx, cell in enumerate(row):
-            widths[idx] = max(widths[idx], len(cell.text))
-    return widths
+def _render_cell(text: str, cached: bool) -> Text:
+    return Text(text, style="dim" if cached else "")
 
 
-def draw_screen(
-    stdscr: curses.window,
-    rows: list[list[Cell]],
-    headers: list[str],
-    selected: int,
-    status_line: str | None,
-    warning: str | None,
-) -> None:
-    """Draw the TUI screen."""
-    stdscr.erase()
-    height, width = stdscr.getmaxyx()
-
-    if width <= 1 or height <= 1:
-        stdscr.refresh()
-        return
-
-    def safe_addnstr(y: int, x: int, text: str, max_width: int, attr: int = 0) -> None:
-        if y < 0 or y >= height or x < 0 or x >= width or max_width <= 0:
-            return
-        try:
-            stdscr.addnstr(y, x, text, max_width, attr)
-        except curses.error:
-            pass
-
-    safe_addnstr(0, 0, COMMAND_BAR, width - 1)
-    if status_line:
-        safe_addnstr(1, 0, status_line, width - 1)
-    if warning:
-        warning_line = 2 if status_line else 1
-        safe_addnstr(warning_line, 0, warning, width - 1)
-
-    widths = column_widths(rows, headers)
-    x = 0
-    if status_line and warning:
-        y = 4
-    elif status_line or warning:
-        y = 3
-    else:
-        y = 2
-
-    if y >= height:
-        stdscr.refresh()
-        return
-
-    for idx, header in enumerate(headers):
-        safe_addnstr(y, x, header.ljust(widths[idx]), width - x - 1)
-        x += widths[idx] + 3
-
-    y += 1
-    for idx, row in enumerate(rows):
-        if y + idx >= height:
-            break
-        x = 0
-        base_attr = curses.A_REVERSE if idx == selected else 0
-        for col_idx, cell in enumerate(row):
-            attr = base_attr | (curses.A_DIM if cell.cached else 0)
-            safe_addnstr(y + idx, x, cell.text.ljust(widths[col_idx]), width - x - 1, attr)
-            x += widths[col_idx] + 3
-
-    stdscr.refresh()
+def _error_text(exc: subprocess.CalledProcessError) -> str:
+    return (exc.stderr or exc.stdout or "Unknown error").strip() or "Unknown error"
 
 
-def prompt_yes_no(stdscr: curses.window, prompt: str, timeout_ms: int) -> bool:
-    """Prompt for a yes/no response."""
-    height, width = stdscr.getmaxyx()
-    y = height - 1
-    if y < 0:
-        return False
+class ConfirmScreen(ModalScreen[bool]):
+    """Simple yes/no modal."""
 
-    stdscr.move(y, 0)
-    stdscr.clrtoeol()
-    prompt_text = f"{prompt} (y/n): "
-    stdscr.addnstr(y, 0, prompt_text, max(0, width - 1))
-    stdscr.refresh()
-    stdscr.timeout(-1)
+    BINDINGS = [
+        Binding("y", "yes", "Yes"),
+        Binding("n", "no", "No"),
+        Binding("escape", "no", "No"),
+    ]
 
-    while True:
-        ch = stdscr.getch()
-        if ch in (ord("y"), ord("Y")):
-            stdscr.timeout(timeout_ms)
-            return True
-        if ch in (ord("n"), ord("N"), 27):
-            stdscr.timeout(timeout_ms)
-            return False
+    def __init__(self, prompt: str) -> None:
+        super().__init__()
+        self.prompt = prompt
 
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal"):
+            with Vertical(classes="modal-body"):
+                yield Static(self.prompt, classes="modal-title")
+                yield Static("Press y to confirm, n or Esc to cancel.", classes="modal-hint")
 
-def prompt_text(stdscr: curses.window, prompt: str, timeout_ms: int) -> str | None:
-    """Prompt for text input."""
-    height, width = stdscr.getmaxyx()
-    y = height - 1
-    if y < 0:
-        return None
+    def action_yes(self) -> None:
+        self.dismiss(True)
 
-    stdscr.move(y, 0)
-    stdscr.clrtoeol()
-    stdscr.addnstr(y, 0, prompt, max(0, width - 1))
-    stdscr.refresh()
-    stdscr.timeout(-1)
-    curses.echo()
-    curses.curs_set(1)
-
-    try:
-        max_len = max(1, width - len(prompt) - 1)
-        raw = stdscr.getstr(y, len(prompt), max_len)
-    finally:
-        curses.noecho()
-        curses.curs_set(0)
-        stdscr.timeout(timeout_ms)
-
-    try:
-        value = raw.decode("utf-8").strip()
-    except Exception:
-        value = ""
-
-    return value or None
+    def action_no(self) -> None:
+        self.dismiss(False)
 
 
-class TuiApp:
-    """Main TUI application."""
+class TextInputScreen(ModalScreen[str | None]):
+    """Text input modal."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, prompt: str) -> None:
+        super().__init__()
+        self.prompt = prompt
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal"):
+            with Vertical(classes="modal-body"):
+                yield Static(self.prompt, classes="modal-title")
+                yield Input(
+                    placeholder="Type and press Enter", classes="modal-input", id="value_input"
+                )
+                yield Static("Esc to cancel.", classes="modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#value_input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        self.dismiss(value or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class TuiApp(App[Path | None]):
+    """Main textual application."""
+
+    CSS = CSS
+    BINDINGS = [
+        Binding("q", "quit_picker", "Quit"),
+        Binding("escape", "quit_picker", "Quit"),
+        Binding("enter", "choose", "Open"),
+        Binding("n", "new_worktree", "New"),
+        Binding("d", "delete_worktree", "Delete", show=False),
+        Binding("shift+d", "delete_worktree", "Delete"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("shift+r", "rename_worktree", "Rename"),
+        Binding("p", "pull_worktree", "Pull"),
+        Binding("shift+p", "push_worktree", "Push"),
+    ]
 
     def __init__(
         self,
@@ -226,18 +254,87 @@ class TuiApp:
         state_lock: threading.Lock,
         refresh_state: dict[str, bool],
     ) -> None:
+        super().__init__()
         self.repo_root = repo_root
         self.items = items
         self.default_branch = default_branch
         self.warning = warning
         self.state_lock = state_lock
         self.refresh_state = refresh_state
-        self.selected = 0
-        self.status_line: str | None = None
-        self.timeout_ms = 200
 
-    def reload_items(self, selected_branch: str | None) -> int:
-        """Reload worktree items and return new selection index."""
+        self.selected_path: Path | None = None
+        self._busy = False
+        self._spinner_index = 0
+        self._spinner_message: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(COMMAND_BAR, id="command_bar")
+        yield Static("", id="status_line")
+        yield Static(self.warning or "", id="warning_line")
+        yield DataTable(id="table", cursor_type="row")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#table", DataTable)
+        table.zebra_stripes = True
+        table.cursor_type = "row"
+        table.add_columns(*HEADERS)
+        self._populate_table()
+        self.set_interval(0.25, self._tick)
+
+    def _tick(self) -> None:
+        if self._spinner_message:
+            spinner = SPINNER[self._spinner_index % len(SPINNER)]
+            self._spinner_index += 1
+            self._set_status(f"{self._spinner_message} {spinner}")
+
+        # Repaint to show results from background refresh threads.
+        self._populate_table()
+
+    def _set_status(self, message: str | None) -> None:
+        self.query_one("#status_line", Static).update(message or "")
+
+    def _populate_table(self) -> None:
+        table = self.query_one("#table", DataTable)
+        selected_branch = self._selected_branch()
+
+        with self.state_lock:
+            snapshot = list(self.items)
+
+        table.clear(columns=False)
+        for item in snapshot:
+            values = format_row(item, self.default_branch)
+            row = [_render_cell(text, cached) for text, cached in values]
+            table.add_row(*row, key=item.path.as_posix())
+
+        if not snapshot:
+            return
+
+        row_index = 0
+        if selected_branch:
+            for idx, item in enumerate(snapshot):
+                if item.branch == selected_branch:
+                    row_index = idx
+                    break
+        table.move_cursor(row=row_index)
+
+    def _selected_branch(self) -> str | None:
+        item = self._current_item()
+        return item.branch if item else None
+
+    def _current_item(self) -> WorktreeInfo | None:
+        table = self.query_one("#table", DataTable)
+        if not self.items:
+            return None
+        row = table.cursor_row
+        if row < 0 or row >= len(self.items):
+            return None
+        with self.state_lock:
+            if row >= len(self.items):
+                return None
+            return self.items[row]
+
+    def _reload_items(self, selected_branch: str | None) -> None:
         self.default_branch = git_ops.get_default_branch(self.repo_root)
         new_items = services.load_worktrees(self.repo_root)
 
@@ -245,19 +342,18 @@ class TuiApp:
             self.items.clear()
             self.items.extend(new_items)
 
-        if not self.items:
-            return 0
+        self._populate_table()
 
         if selected_branch:
-            for idx, item in enumerate(self.items):
+            table = self.query_one("#table", DataTable)
+            for idx, item in enumerate(new_items):
                 if item.branch == selected_branch:
-                    return idx
+                    table.move_cursor(row=idx)
+                    break
 
-        return min(self.selected, len(self.items) - 1)
-
-    def start_refresh_thread(self) -> None:
-        """Start a background refresh thread."""
+    def _start_refresh_thread(self) -> None:
         if self.refresh_state.get("running"):
+            self._set_status("Refresh already in progress...")
             return
 
         self.refresh_state["running"] = True
@@ -275,61 +371,99 @@ class TuiApp:
 
         threading.Thread(target=runner, daemon=True).start()
 
-    def render(self, stdscr: curses.window) -> None:
-        """Render the current state."""
-        with self.state_lock:
-            rows = [format_row(item, self.default_branch) for item in self.items]
-        draw_screen(stdscr, rows, HEADERS, self.selected, self.status_line, self.warning)
+    def _run_action_with_spinner(
+        self,
+        spinner_message: str,
+        action: Callable[[], None],
+        success_message: str,
+        failure_prefix: str,
+        selected_branch_after: str | None,
+    ) -> None:
+        if self._busy:
+            self._set_status("Another operation is in progress.")
+            return
 
-    def run_with_spinner(
-        self, stdscr: curses.window, message: str, action: Callable[[], None]
-    ) -> str | None:
-        """Run an action with a spinner, returning error message on failure."""
-        spinner = "|/-\\"
-        idx = 0
-        error: list[str | None] = [None]
-        done = threading.Event()
+        self._busy = True
+        self._spinner_index = 0
+        self._spinner_message = spinner_message
 
-        def worker() -> None:
+        def runner() -> None:
             try:
                 action()
             except subprocess.CalledProcessError as exc:
-                error[0] = exc.stderr.strip() or exc.stdout.strip() or "Unknown error"
-            finally:
-                done.set()
+                self.call_from_thread(
+                    self._finish_action,
+                    f"{failure_prefix}: {_error_text(exc)}",
+                    False,
+                    None,
+                )
+                return
 
-        threading.Thread(target=worker, daemon=True).start()
+            self.call_from_thread(self._finish_action, success_message, True, selected_branch_after)
 
-        while not done.is_set():
-            self.status_line = f"{message} {spinner[idx % len(spinner)]}"
-            self.render(stdscr)
-            idx += 1
-            time.sleep(0.1)
+        threading.Thread(target=runner, daemon=True).start()
 
-        return error[0]
+    def _finish_action(
+        self, status: str, succeeded: bool, selected_branch_after: str | None
+    ) -> None:
+        self._spinner_message = None
+        self._busy = False
+        self._set_status(status)
+        if not succeeded:
+            return
+        if selected_branch_after is not None:
+            self._reload_items(selected_branch_after)
+        elif "Deleted " in status:
+            self._reload_items(None)
 
-    def handle_pull(self, stdscr: curses.window, current: WorktreeInfo) -> None:
-        """Handle pull command."""
+    def action_quit_picker(self) -> None:
+        self.exit(None)
+
+    def action_choose(self) -> None:
+        current = self._current_item()
+        if current is None:
+            self.exit(None)
+            return
+        self.selected_path = current.path
+        self.exit(current.path)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Open selected worktree when DataTable handles Enter."""
+        if event.data_table.id != "table":
+            return
+        self.action_choose()
+
+    async def action_refresh(self) -> None:
+        if self._busy:
+            self._set_status("Another operation is in progress.")
+            return
+        self._set_status("Refreshing...")
+        self._start_refresh_thread()
+
+    async def action_pull_worktree(self) -> None:
+        current = self._current_item()
+        if current is None:
+            self._set_status("No worktrees available.")
+            return
         if current.is_detached:
-            self.status_line = "Cannot pull a detached worktree."
+            self._set_status("Cannot pull a detached worktree.")
             return
 
-        error = self.run_with_spinner(
-            stdscr,
+        self._run_action_with_spinner(
             f"Pulling {current.branch}",
             lambda: git_ops.pull(current.path),
+            f"Pulled {current.branch}.",
+            "Pull failed",
+            current.branch,
         )
 
-        if error:
-            self.status_line = f"Pull failed: {error}"
-        else:
-            self.status_line = f"Pulled {current.branch}."
-            self.selected = self.reload_items(current.branch)
-
-    def handle_push(self, stdscr: curses.window, current: WorktreeInfo) -> None:
-        """Handle push command."""
+    async def action_push_worktree(self) -> None:
+        current = self._current_item()
+        if current is None:
+            self._set_status("No worktrees available.")
+            return
         if current.is_detached:
-            self.status_line = "Cannot push a detached worktree."
+            self._set_status("Cannot push a detached worktree.")
             return
 
         def do_push() -> None:
@@ -338,21 +472,24 @@ class TuiApp:
             else:
                 git_ops.push_set_upstream(current.path, current.ref_name)  # type: ignore[arg-type]
 
-        error = self.run_with_spinner(stdscr, f"Pushing {current.branch}", do_push)
+        self._run_action_with_spinner(
+            f"Pushing {current.branch}",
+            do_push,
+            f"Pushed {current.branch}.",
+            "Push failed",
+            current.branch,
+        )
 
-        if error:
-            self.status_line = f"Push failed: {error}"
-        else:
-            self.status_line = f"Pushed {current.branch}."
-            self.selected = self.reload_items(current.branch)
-
-    def handle_delete(self, stdscr: curses.window, current: WorktreeInfo) -> None:
-        """Handle delete command."""
+    async def action_delete_worktree(self) -> None:
+        current = self._current_item()
+        if current is None:
+            self._set_status("No worktrees available.")
+            return
         if current.is_detached:
-            self.status_line = "Cannot delete a detached worktree."
+            self._set_status("Cannot delete a detached worktree.")
             return
 
-        warn_parts = []
+        warn_parts: list[str] = []
         if current.dirty:
             warn_parts.append("working tree has uncommitted changes")
         if git_ops.has_unpushed_commits(self.repo_root, current.ref_name):  # type: ignore[arg-type]
@@ -362,39 +499,43 @@ class TuiApp:
         if warn_parts:
             prompt = f"Delete {current.branch} ({'; '.join(warn_parts)})?"
 
-        if not prompt_yes_no(stdscr, prompt, self.timeout_ms):
-            self.status_line = "Delete cancelled."
+        confirmed = await self.push_screen_wait(ConfirmScreen(prompt))
+        if not confirmed:
+            self._set_status("Delete cancelled.")
             return
 
         def do_delete() -> None:
             git_ops.worktree_remove(self.repo_root, current.path)
             git_ops.branch_delete(self.repo_root, current.ref_name)  # type: ignore[arg-type]
 
-        error = self.run_with_spinner(stdscr, f"Deleting {current.branch}", do_delete)
+        self._run_action_with_spinner(
+            f"Deleting {current.branch}",
+            do_delete,
+            f"Deleted {current.branch}.",
+            "Delete failed",
+            None,
+        )
 
-        if error:
-            self.status_line = f"Delete failed: {error}"
-        else:
-            self.status_line = f"Deleted {current.branch}."
-            self.selected = self.reload_items(None)
-
-    def handle_rename(self, stdscr: curses.window, current: WorktreeInfo) -> None:
-        """Handle rename command."""
+    async def action_rename_worktree(self) -> None:
+        current = self._current_item()
+        if current is None:
+            self._set_status("No worktrees available.")
+            return
         if current.is_detached:
-            self.status_line = "Cannot rename a detached worktree."
+            self._set_status("Cannot rename a detached worktree.")
             return
 
-        new_branch = prompt_text(stdscr, f"Rename {current.branch} to: ", self.timeout_ms)
+        new_branch = await self.push_screen_wait(TextInputScreen(f"Rename {current.branch} to:"))
         if not new_branch:
-            self.status_line = "Rename cancelled."
+            self._set_status("Rename cancelled.")
             return
 
         if not git_ops.is_valid_branch_name(self.repo_root, new_branch):
-            self.status_line = "Invalid branch name."
+            self._set_status("Invalid branch name.")
             return
 
         if git_ops.branch_exists(self.repo_root, new_branch):
-            self.status_line = "Branch already exists."
+            self._set_status("Branch already exists.")
             return
 
         new_path = self.repo_root / new_branch
@@ -403,32 +544,31 @@ class TuiApp:
             git_ops.branch_rename(self.repo_root, current.ref_name, new_branch)  # type: ignore[arg-type]
             git_ops.worktree_move(self.repo_root, current.path, new_path)
 
-        error = self.run_with_spinner(stdscr, f"Renaming to {new_branch}", do_rename)
+        self._run_action_with_spinner(
+            f"Renaming to {new_branch}",
+            do_rename,
+            f"Renamed to {new_branch}.",
+            "Rename failed",
+            new_branch,
+        )
 
-        if error:
-            self.status_line = f"Rename failed: {error}"
-        else:
-            self.status_line = f"Renamed to {new_branch}."
-            self.selected = self.reload_items(new_branch)
-
-    def handle_new(self, stdscr: curses.window) -> None:
-        """Handle new worktree command."""
-        new_branch = prompt_text(stdscr, "New branch name: ", self.timeout_ms)
+    async def action_new_worktree(self) -> None:
+        new_branch = await self.push_screen_wait(TextInputScreen("New branch name:"))
         if not new_branch:
-            self.status_line = "Create cancelled."
+            self._set_status("Create cancelled.")
             return
 
         if not git_ops.is_valid_branch_name(self.repo_root, new_branch):
-            self.status_line = "Invalid branch name."
+            self._set_status("Invalid branch name.")
             return
 
         if git_ops.branch_exists(self.repo_root, new_branch):
-            self.status_line = "Branch already exists locally."
+            self._set_status("Branch already exists locally.")
             return
 
         new_path = self.repo_root / new_branch
         if new_path.exists():
-            self.status_line = "Target worktree path already exists."
+            self._set_status("Target worktree path already exists.")
             return
 
         def do_create() -> None:
@@ -439,67 +579,13 @@ class TuiApp:
             else:
                 git_ops.worktree_add(self.repo_root, new_path, new_branch, self.default_branch)
 
-        error = self.run_with_spinner(stdscr, f"Creating {new_branch}", do_create)
-
-        if error:
-            self.status_line = f"Create failed: {error}"
-        else:
-            self.status_line = f"Created {new_branch}."
-            self.selected = self.reload_items(new_branch)
-
-    def run(self) -> Path | None:
-        """Run the TUI and return the selected path (or None if cancelled)."""
-
-        def inner(stdscr: curses.window) -> Path | None:
-            curses.curs_set(0)
-            stdscr.keypad(True)
-            stdscr.timeout(self.timeout_ms)
-
-            if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-
-            while True:
-                with self.state_lock:
-                    row_count = len(self.items)
-
-                self.render(stdscr)
-                ch = stdscr.getch()
-
-                if ch in (ord("q"), 27):
-                    return None
-
-                if ch in (curses.KEY_DOWN, ord("j")):
-                    if row_count:
-                        self.selected = min(self.selected + 1, row_count - 1)
-                elif ch in (curses.KEY_UP, ord("k")):
-                    if row_count:
-                        self.selected = max(self.selected - 1, 0)
-                elif ch in (curses.KEY_ENTER, 10, 13):
-                    if self.items:
-                        return self.items[self.selected].path
-                elif ch == ord("r"):
-                    self.status_line = "Refreshing..."
-                    self.start_refresh_thread()
-                elif ch in (ord("p"), ord("P"), ord("D"), ord("R"), ord("n")):
-                    if not self.items:
-                        self.status_line = "No worktrees available."
-                        continue
-
-                    if ch == ord("n"):
-                        self.handle_new(stdscr)
-                    else:
-                        current = self.items[self.selected]
-                        if ch == ord("p"):
-                            self.handle_pull(stdscr, current)
-                        elif ch == ord("P"):
-                            self.handle_push(stdscr, current)
-                        elif ch == ord("D"):
-                            self.handle_delete(stdscr, current)
-                        elif ch == ord("R"):
-                            self.handle_rename(stdscr, current)
-
-        return curses.wrapper(inner)
+        self._run_action_with_spinner(
+            f"Creating {new_branch}",
+            do_create,
+            f"Created {new_branch}.",
+            "Create failed",
+            new_branch,
+        )
 
 
 def run_tui(
@@ -510,6 +596,6 @@ def run_tui(
     state_lock: threading.Lock,
     refresh_state: dict[str, bool],
 ) -> Path | None:
-    """Run the TUI application."""
+    """Run the textual TUI application."""
     app = TuiApp(repo_root, items, default_branch, warning, state_lock, refresh_state)
     return app.run()

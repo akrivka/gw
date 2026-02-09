@@ -12,7 +12,7 @@ gw/
 ├── gh_ops.py       # GitHub CLI operations (PR and checks queries)
 ├── cache_db.py     # SQLite caching with CacheDB context manager
 ├── services.py     # Business logic (load_worktrees, refresh_from_upstream)
-└── tui.py          # Curses TUI (TuiApp class, rendering, input handling)
+└── tui.py          # Textual TUI (TuiApp class, rendering, input handling)
 ```
 
 Other files:
@@ -23,11 +23,11 @@ Other files:
 ### Module Responsibilities
 
 - **models.py**: Pure data structures with no dependencies. Contains `WorktreeInfo`, `Cell`, `AheadBehind`, `DiffStat`, `ParsedWorktree`.
-- **git_ops.py**: All git subprocess calls. No curses, no sqlite, no click. Functions like `run()`, `get_repo_root()`, `parse_worktrees()`, `count_ahead_behind()`, etc.
+- **git_ops.py**: All git subprocess calls. No UI, no sqlite, no click. Functions like `run()`, `get_repo_root()`, `parse_worktrees()`, `count_ahead_behind()`, etc.
 - **gh_ops.py**: GitHub CLI operations. `get_pr_info()`, `get_checks_info()`, `classify_checks()`.
 - **cache_db.py**: SQLite persistence. `CacheDB` context manager with methods like `upsert_pr()`, `upsert_changes()`. Thread-safe with `get_db_lock()`.
 - **services.py**: Orchestration layer. `load_worktrees()` combines git + cache. `refresh_from_upstream()` updates items from remote.
-- **tui.py**: Curses UI. `TuiApp` class handles rendering and key dispatch. Helper functions for prompts and drawing.
+- **tui.py**: Textual UI. `TuiApp` class handles rendering and key dispatch. Includes modal prompts and background action handling.
 - **cli.py**: Click group with `main()`, `init_repo()`, `shell_init()` commands.
 
 ## Build, Test, and Development Commands

@@ -3,7 +3,10 @@ name = "gw"
 version = "0.1.0"
 description = "Git worktree manager"
 requires-python = ">=3.11"
-dependencies = ["click>=8.1"]
+dependencies = [
+    "click>=8.1",
+    "textual>=0.89.1",
+]
 
 [project.scripts]
 gw = "gw.cli:main"
