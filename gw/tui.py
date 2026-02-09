@@ -14,7 +14,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Static
 
-from gw import git_ops, services
+from gw import git_ops, hooks, services
 from gw.models import WorktreeInfo
 
 HEADERS = [
@@ -398,6 +398,9 @@ class TuiApp(App[Path | None]):
                     None,
                 )
                 return
+            except Exception as exc:
+                self.call_from_thread(self._finish_action, f"{failure_prefix}: {exc}", False, None)
+                return
 
             self.call_from_thread(self._finish_action, success_message, True, selected_branch_after)
 
@@ -578,6 +581,7 @@ class TuiApp(App[Path | None]):
                 git_ops.worktree_add(self.repo_root, new_path, new_branch)
             else:
                 git_ops.worktree_add(self.repo_root, new_path, new_branch, self.default_branch)
+            hooks.run_post_worktree_creation_hooks(self.repo_root)
 
         self._run_action_with_spinner(
             f"Creating {new_branch}",

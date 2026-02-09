@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from gw import git_ops, services
+from gw import git_ops, hooks, services
 from gw.tui import run_tui
 
 
@@ -212,6 +212,49 @@ def shell_init() -> None:
 end
 """
     click.echo("# bash/zsh\n" + bash_zsh + "\n# fish\n" + fish)
+
+
+@main.group("hooks")
+def hooks_cmd() -> None:
+    """Manage repo-local hooks."""
+
+
+@hooks_cmd.command("add")
+@click.argument("command")
+def add_hook(command: str) -> None:
+    """Add a PostWorktreeCreation command hook."""
+    try:
+        repo_root = git_ops.get_repo_root()
+    except subprocess.CalledProcessError:
+        click.echo("gw hooks add: not inside a git repository", err=True)
+        raise SystemExit(1)
+
+    try:
+        hooks.add_post_worktree_creation_hook(repo_root, command)
+    except hooks.HookError as exc:
+        click.echo(f"gw hooks add: {exc}", err=True)
+        raise SystemExit(1)
+
+    click.echo("gw hooks add: hook added")
+
+
+@hooks_cmd.command("rerun")
+def rerun_hooks() -> None:
+    """Rerun PostWorktreeCreation hooks in the current worktree root."""
+    try:
+        repo_root = git_ops.get_repo_root()
+        worktree_root = Path(git_ops.run(["rev-parse", "--show-toplevel"], cwd=Path.cwd())).resolve()
+    except subprocess.CalledProcessError:
+        click.echo("gw hooks rerun: not inside a git worktree", err=True)
+        raise SystemExit(1)
+
+    try:
+        hooks.run_post_worktree_creation_hooks(repo_root, cwd=worktree_root)
+    except hooks.HookError as exc:
+        click.echo(f"gw hooks rerun: {exc}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"gw hooks rerun: hooks executed in {worktree_root}")
 
 
 if __name__ == "__main__":

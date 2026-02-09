@@ -81,6 +81,7 @@ Example:
 ```
 
 You should be able to add a hook with `gw hooks add "<cmd>"` to the local config file (create if missing, append only).
+You should also be able to rerun hooks in the current worktree with `gw hooks rerun`.
 
 ### `gw init`
 
@@ -98,8 +99,8 @@ There should be an additional command, `gw init`, that initializes the folder st
 1. [ x ] Just the basic `gw` screen with only the <Enter> command. No caching. Omit the PR columns that hit the GitHub API.
 2. [ x ] Add the remaining columns, caching and lazy-updating. Use `gh` for the GitHub fields. Make sure to adhere to the spec closely here.
 3. [ x ] Add the remaining commands.
-4. [ ] Add the health checking/doctoring before startup and the `gw` init command.
-5. [ ] Add hooks support.
+4. [ x ] Add hooks support.
+5. [ ] Add the health checking/doctoring before startup and the `gw` init command.
 
 ## Tooling
 
