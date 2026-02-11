@@ -37,6 +37,57 @@ cargo install --path .
 
 Coming soon.
 
+## Hooks
+
+`gw` supports repo-local command hooks that run after creating a worktree.
+
+### Add a hook
+
+```bash
+gw hooks add "<command>"
+```
+
+Example:
+
+```bash
+gw hooks add "ln -s ~/repo/.env .env"
+```
+
+This writes hook config to `.gw/settings.json` in the repository root.
+
+### Rerun hooks in the current worktree
+
+```bash
+gw hooks rerun
+```
+
+This executes the configured post-creation hooks in your current worktree directory.
+
+### Settings format
+
+Hooks are stored in `.gw/settings.json` under `hooks.PostWorktreeCreation`:
+
+```json
+{
+  "hooks": {
+    "PostWorktreeCreation": [
+      {
+        "type": "command",
+        "command": "git fetch --all --prune"
+      }
+    ]
+  }
+}
+```
+
+### Behavior notes
+
+- Hooks run after `gw` creates a new worktree in the TUI flow.
+- Hooks are executed with `sh -c` on Unix and `cmd /C` on Windows.
+- Commands run in the newly created worktree directory (or current worktree for `gw hooks rerun`).
+- If a hook exits non-zero, `gw` stops and reports the first failing command.
+- `gw hooks add` appends a new entry; it does not deduplicate existing commands.
+
 ## Development
 
 This program is completely vibe-coded in Rust. You can see the spec I used in docs/spec.md. I initially vibe-coded this in Python (curses -> Textual) but found it too buggy, so told Codex "rewrite in Rust" and it two-shotted a better impl.
