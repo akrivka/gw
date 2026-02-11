@@ -1,8 +1,11 @@
 use crate::models::WorktreeInfo;
 use crate::{git_ops, hooks, services};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -30,8 +33,13 @@ const HEADERS: [&str; 6] = [
 ];
 
 const COMMAND_BAR: &str =
-    "Enter: open  |  n: new from main  |  N: new from selected  |  D: delete  |  R: rename  |  p: pull  |  P: push  |  r: refresh  |  q/Esc: quit";
+    "Enter: open  |  o: open PR  |  click PR: open in browser  |  n: new from main  |  N: new from selected  |  D: delete  |  R: rename  |  p: pull  |  P: push  |  r: refresh  |  q/Esc: quit";
 const SPINNER: &[char] = &['|', '/', '-', '\\'];
+const TABLE_COLUMN_WIDTHS: [u16; 6] = [36, 12, 18, 24, 14, 14];
+const PR_COLUMN_INDEX: usize = 3;
+const HIGHLIGHT_SYMBOL_WIDTH: u16 = 3;
+const TABLE_TOP_ROW: u16 = 4;
+const TABLE_FIRST_DATA_ROW: u16 = TABLE_TOP_ROW + 1;
 
 enum ConfirmAction {
     Delete {
@@ -173,10 +181,14 @@ impl TuiApp {
             }
 
             if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key(key);
+                match event::read()? {
+                    Event::Key(key) => {
+                        if key.kind == KeyEventKind::Press {
+                            self.handle_key(key);
+                        }
                     }
+                    Event::Mouse(mouse) => self.handle_mouse(mouse),
+                    _ => {}
                 }
             }
 
@@ -278,9 +290,49 @@ impl TuiApp {
             KeyCode::Char('d') => self.action_delete_worktree(),
             KeyCode::Char('D') => self.action_delete_worktree(),
             KeyCode::Char('R') => self.action_rename_worktree(),
+            KeyCode::Char('o') => self.action_open_pr(),
             KeyCode::Char('p') => self.action_pull_worktree(),
             KeyCode::Char('P') => self.action_push_worktree(),
             _ => {}
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if !matches!(self.mode, Mode::Normal) {
+            return;
+        }
+
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return;
+        }
+
+        if mouse.row < TABLE_FIRST_DATA_ROW {
+            return;
+        }
+
+        let items = self.snapshot_items();
+        let row_index = self.table_state.offset() + (mouse.row - TABLE_FIRST_DATA_ROW) as usize;
+        let Some(item) = items.get(row_index) else {
+            return;
+        };
+
+        self.table_state.select(Some(row_index));
+        if !is_pr_column(mouse.column) {
+            return;
+        }
+
+        if let Some(url) = item.pr_url.as_deref() {
+            match open_url(url) {
+                Ok(()) => {
+                    self.status = format!(
+                        "Opened PR #{number} in browser.",
+                        number = item.pr_number.unwrap_or_default()
+                    );
+                }
+                Err(err) => {
+                    self.status = format!("Failed to open PR: {err}");
+                }
+            }
         }
     }
 
@@ -507,6 +559,30 @@ impl TuiApp {
                 Ok(())
             },
         );
+    }
+
+    fn action_open_pr(&mut self) {
+        let Some(current) = self.current_item() else {
+            self.status = "No worktrees available.".to_string();
+            return;
+        };
+
+        let Some(url) = current.pr_url.as_deref() else {
+            self.status = "No pull request for selected worktree.".to_string();
+            return;
+        };
+
+        match open_url(url) {
+            Ok(()) => {
+                self.status = format!(
+                    "Opened PR #{number} in browser.",
+                    number = current.pr_number.unwrap_or_default()
+                );
+            }
+            Err(err) => {
+                self.status = format!("Failed to open PR: {err}");
+            }
+        }
     }
 
     fn action_push_worktree(&mut self) {
@@ -871,12 +947,22 @@ impl TuiApp {
             let values = format_row(item, &self.default_branch);
             let cells: Vec<Cell<'_>> = values
                 .into_iter()
-                .map(|(text, cached)| {
+                .enumerate()
+                .map(|(column_index, (text, cached))| {
+                    let clickable_pr = column_index == PR_COLUMN_INDEX
+                        && item.pr_url.is_some()
+                        && !text.is_empty();
+                    let mut style = Style::default();
                     if cached {
-                        Cell::from(text).style(Style::default().fg(Color::DarkGray))
-                    } else {
-                        Cell::from(text)
+                        style = style.fg(Color::DarkGray);
+                    } else if clickable_pr {
+                        style = style.fg(Color::Cyan);
                     }
+                    if clickable_pr {
+                        style = style.add_modifier(Modifier::UNDERLINED);
+                    }
+
+                    Cell::from(text).style(style)
                 })
                 .collect();
             Row::new(cells)
@@ -885,12 +971,12 @@ impl TuiApp {
         let table = Table::new(
             rows,
             [
-                Constraint::Length(36),
-                Constraint::Length(12),
-                Constraint::Length(18),
-                Constraint::Length(24),
-                Constraint::Length(14),
-                Constraint::Length(14),
+                Constraint::Length(TABLE_COLUMN_WIDTHS[0]),
+                Constraint::Length(TABLE_COLUMN_WIDTHS[1]),
+                Constraint::Length(TABLE_COLUMN_WIDTHS[2]),
+                Constraint::Length(TABLE_COLUMN_WIDTHS[3]),
+                Constraint::Length(TABLE_COLUMN_WIDTHS[4]),
+                Constraint::Length(TABLE_COLUMN_WIDTHS[5]),
             ],
         )
         .header(
@@ -943,7 +1029,7 @@ impl TuiApp {
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stderr>>> {
     enable_raw_mode()?;
     let mut stderr = io::stderr();
-    execute!(stderr, EnterAlternateScreen)?;
+    execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stderr);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
@@ -951,9 +1037,24 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stderr>>> {
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stderr>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+fn is_pr_column(column: u16) -> bool {
+    let left_offset = HIGHLIGHT_SYMBOL_WIDTH;
+    let pr_start = left_offset
+        + TABLE_COLUMN_WIDTHS
+            .iter()
+            .take(PR_COLUMN_INDEX)
+            .sum::<u16>();
+    let pr_end = pr_start + TABLE_COLUMN_WIDTHS[PR_COLUMN_INDEX];
+    column >= pr_start && column < pr_end
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1104,6 +1205,25 @@ fn mark_refresh_columns_validated(items: &mut [WorktreeInfo]) {
         item.changes_validated = true;
         item.pr_validated = true;
         item.checks_validated = true;
+    }
+}
+
+fn open_url(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(url).status()?;
+
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .status()?;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = std::process::Command::new("xdg-open").arg(url).status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("browser command exited with status {status}"))
     }
 }
 
