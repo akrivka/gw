@@ -128,7 +128,7 @@ pub fn parse_worktrees(repo_root: Option<&Path>) -> Result<Vec<ParsedWorktree>> 
 }
 
 pub fn count_ahead_behind(repo_root: &Path, left: &str, right: &str) -> AheadBehind {
-    let range = format!("{}...{}", left, right);
+    let range = format!("{left}...{right}");
     let Some(output) = try_run(
         &["rev-list", "--left-right", "--count", &range],
         Some(repo_root),
@@ -198,7 +198,7 @@ pub fn get_last_commit_ts(repo_root: &Path, target: &str) -> i64 {
 }
 
 pub fn get_upstream(repo_root: &Path, ref_name: &str) -> Option<String> {
-    let arg = format!("{}@{{upstream}}", ref_name);
+    let arg = format!("{ref_name}@{{upstream}}");
     try_run(&["rev-parse", "--abbrev-ref", &arg], Some(repo_root))
 }
 

@@ -42,7 +42,7 @@ fn get_db_path(repo_root: &Path) -> Result<PathBuf> {
     let mut hasher = Sha1::new();
     hasher.update(repo_root.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
-    let repo_id = format!("{:x}", digest);
+    let repo_id = format!("{digest:x}");
     Ok(get_cache_dir()?.join(format!("{repo_id}.sqlite")))
 }
 

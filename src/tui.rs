@@ -85,9 +85,7 @@ pub fn run_tui(
     let run_result = app.run(&mut terminal);
     let restore_result = restore_terminal(&mut terminal);
 
-    if let Err(err) = restore_result {
-        return Err(err);
-    }
+    restore_result?;
 
     run_result
 }
@@ -733,7 +731,7 @@ impl TuiApp {
                     selected_branch_after,
                 },
                 Err(err) => OpResult {
-                    status: format!("{}: {}", failure_prefix, err),
+                    status: format!("{failure_prefix}: {err}"),
                     succeeded: false,
                     reload_on_success: false,
                     selected_branch_after: None,
@@ -748,11 +746,11 @@ impl TuiApp {
         let spinner = SPINNER[self.spinner_index % SPINNER.len()];
 
         if let Some(message) = &self.spinner_message {
-            return format!("{} {}", message, spinner);
+            return format!("{message} {spinner}");
         }
 
         if self.refresh_running.load(Ordering::SeqCst) {
-            return format!("Refreshing {}", spinner);
+            return format!("Refreshing {spinner}");
         }
 
         self.status.clone()
@@ -901,7 +899,7 @@ fn relative_time(ts: i64) -> String {
     let delta = (now - ts).max(0);
 
     if delta < 60 {
-        format!("{}s ago", delta)
+        format!("{delta}s ago")
     } else if delta < 3600 {
         format!("{}m ago", delta / 60)
     } else if delta < 86_400 {

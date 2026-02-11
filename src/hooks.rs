@@ -136,7 +136,7 @@ pub fn run_post_worktree_creation_hooks(repo_root: &Path, cwd: Option<&Path>) ->
             } else {
                 "unknown error".to_string()
             };
-            return Err(anyhow!("hook failed: `{}`: {}", command, msg));
+            return Err(anyhow!("hook failed: `{command}`: {msg}"));
         }
     }
 

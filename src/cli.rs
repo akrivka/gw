@@ -288,7 +288,7 @@ fn shell_init() -> Result<()> {
 end
 "#;
 
-    println!("# bash/zsh\n{}\n# fish\n{}", bash_zsh, fish);
+    println!("# bash/zsh\n{bash_zsh}\n# fish\n{fish}");
     Ok(())
 }
 
@@ -320,7 +320,7 @@ fn rerun_hooks() -> Result<()> {
 }
 
 fn confirm(prompt: &str) -> Result<bool> {
-    print!("{} [y/N]: ", prompt);
+    print!("{prompt} [y/N]: ");
     io::stdout().flush()?;
 
     let mut buf = String::new();

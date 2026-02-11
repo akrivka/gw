@@ -70,3 +70,10 @@ cargo test               # run tests (when present)
 
 - GitHub integration relies on the `gh` CLI; don't add tokens/credentials to this repo.
 - Local state is stored in user cache (e.g. `~/.cache/gw/*.sqlite`); avoid making behavior depend on repo-committed files unless explicitly designed.
+
+## Agent Learnings (Codex)
+
+- Before finalizing Rust changes, run `cargo clippy -- -D warnings` and fix all warnings, not just compile errors.
+- Prefer inline format args in macros and `format!` (e.g. `"{name}"`, `"{left}...{right}"`) to satisfy `clippy::uninlined_format_args`.
+- Use `?` for straightforward error propagation instead of manual `if let Err(...)` return blocks (`clippy::question_mark`).
+- When fixing lint issues, keep edits narrowly scoped to lint-driven refactors and avoid unrelated behavioral changes.
