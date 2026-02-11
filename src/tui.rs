@@ -793,6 +793,10 @@ impl TuiApp {
         self.status.clone()
     }
 
+    fn repo_line(&self) -> String {
+        format!("Repo: {}", self.repo_root.display())
+    }
+
     fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
         let area = frame.area();
         let chunks = Layout::default()
@@ -801,16 +805,18 @@ impl TuiApp {
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
+                Constraint::Length(1),
                 Constraint::Min(1),
             ])
             .split(area);
 
-        frame.render_widget(Paragraph::new(COMMAND_BAR), chunks[0]);
-        frame.render_widget(Paragraph::new(self.status_line()), chunks[1]);
+        frame.render_widget(Paragraph::new(self.repo_line()), chunks[0]);
+        frame.render_widget(Paragraph::new(COMMAND_BAR), chunks[1]);
+        frame.render_widget(Paragraph::new(self.status_line()), chunks[2]);
         frame.render_widget(
             Paragraph::new(self.warning.clone().unwrap_or_default())
                 .style(Style::default().fg(Color::Yellow)),
-            chunks[2],
+            chunks[3],
         );
 
         let items = self.snapshot_items();
@@ -850,7 +856,7 @@ impl TuiApp {
         .highlight_symbol(" > ")
         .block(Block::default().borders(Borders::TOP));
 
-        frame.render_stateful_widget(table, chunks[3], &mut self.table_state);
+        frame.render_stateful_widget(table, chunks[4], &mut self.table_state);
 
         match &self.mode {
             Mode::Normal => {}
