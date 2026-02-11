@@ -54,7 +54,7 @@ fn run_default() -> Result<()> {
     let default_branch = git_ops::get_default_branch(&repo_root);
     let items = services::load_worktrees(&repo_root)?;
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         for item in &items {
             println!("{}", item.path.display());
         }
@@ -439,11 +439,8 @@ fn rollback_conversion(tx: &InitConversionTx) -> Vec<String> {
 
 fn shell_init() -> Result<()> {
     let bash_zsh = r#"gw() {
-  local tmp dest
-  tmp="$(mktemp)" || return $?
-  GW_OUTPUT_FILE="$tmp" command gw "$@" </dev/tty >/dev/tty
-  dest="$(cat "$tmp" 2>/dev/null)"
-  rm -f "$tmp"
+  local dest
+  dest="$(command gw "$@" </dev/tty)" || return $?
   if [ -n "$dest" ]; then
     cd "$dest" || return $?
   fi
@@ -451,13 +448,11 @@ fn shell_init() -> Result<()> {
 "#;
 
     let fish = r#"function gw
-  set -l tmp (mktemp)
-  if test -z "$tmp"
-    return 1
+  set -l dest (command gw $argv | string collect)
+  set -l gw_status $status
+  if test $gw_status -ne 0
+    return $gw_status
   end
-  env GW_OUTPUT_FILE=$tmp command gw $argv </dev/tty >/dev/tty
-  set -l dest (cat $tmp 2>/dev/null)
-  rm -f $tmp
   if test -n "$dest"
     cd "$dest"
   end

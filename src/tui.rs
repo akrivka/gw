@@ -13,8 +13,7 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 use ratatui::Terminal;
 use std::collections::HashMap;
-use std::fs;
-use std::io::{self, Stdout};
+use std::io::{self, Stderr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -146,7 +145,7 @@ impl TuiApp {
 
     fn run(
         &mut self,
-        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        terminal: &mut Terminal<CrosstermBackend<Stderr>>,
     ) -> Result<Option<PathBuf>> {
         loop {
             self.handle_async_results();
@@ -851,16 +850,16 @@ impl TuiApp {
     }
 }
 
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stderr>>> {
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut stderr = io::stderr();
+    execute!(stderr, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stderr);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stderr>>) -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -1025,10 +1024,6 @@ fn merge_refreshed_items(current: &mut [WorktreeInfo], refreshed: &[WorktreeInfo
 }
 
 pub fn write_selected_path(selected_path: &Path) -> Result<()> {
-    if let Some(output_file) = std::env::var_os("GW_OUTPUT_FILE") {
-        fs::write(output_file, selected_path.to_string_lossy().to_string())?;
-    } else {
-        println!("{}", selected_path.display());
-    }
+    println!("{}", selected_path.display());
     Ok(())
 }
