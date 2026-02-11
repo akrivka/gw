@@ -3,67 +3,67 @@
 ## Project Structure & Module Organization
 
 ```
-gw/
-├── __init__.py     # Package metadata and version
-├── __main__.py     # Enable `python -m gw`
-├── cli.py          # Click CLI entrypoint and commands (init, shell-init)
-├── models.py       # Data models (WorktreeInfo, Cell, AheadBehind, etc.)
-├── git_ops.py      # Git subprocess operations (all git commands)
-├── gh_ops.py       # GitHub CLI operations (PR and checks queries)
-├── cache_db.py     # SQLite caching with CacheDB context manager
-├── services.py     # Business logic (load_worktrees, refresh_from_upstream)
-└── tui.py          # Textual TUI (TuiApp class, rendering, input handling)
+src/
+├── main.rs         # Binary entrypoint (delegates to cli::run)
+├── cli.rs          # Clap CLI entrypoint and subcommands (init, shell-init, hooks)
+├── models.rs       # Data models (WorktreeInfo, ParsedWorktree, AheadBehind, etc.)
+├── git_ops.rs      # Git subprocess operations (all git commands)
+├── gh_ops.rs       # GitHub CLI operations (PR and checks queries)
+├── cache_db.rs     # SQLite caching with CacheDB API
+├── services.rs     # Business logic (load_worktrees, refresh_from_upstream)
+├── hooks.rs        # .gw/settings.json hook management and execution
+└── tui.rs          # ratatui + crossterm interactive UI
 ```
 
 Other files:
-- `pyproject.toml`: project metadata and tool configuration (Ruff, script entrypoint)
-- `uv.lock`: locked dependency set for reproducible installs
+- `Cargo.toml`: crate metadata and dependencies
+- `Cargo.lock`: locked dependency set for reproducible builds
 - `spec.md`: product/spec notes; update when behavior or UX changes materially
 
 ### Module Responsibilities
 
-- **models.py**: Pure data structures with no dependencies. Contains `WorktreeInfo`, `Cell`, `AheadBehind`, `DiffStat`, `ParsedWorktree`.
-- **git_ops.py**: All git subprocess calls. No UI, no sqlite, no click. Functions like `run()`, `get_repo_root()`, `parse_worktrees()`, `count_ahead_behind()`, etc.
-- **gh_ops.py**: GitHub CLI operations. `get_pr_info()`, `get_checks_info()`, `classify_checks()`.
-- **cache_db.py**: SQLite persistence. `CacheDB` context manager with methods like `upsert_pr()`, `upsert_changes()`. Thread-safe with `get_db_lock()`.
-- **services.py**: Orchestration layer. `load_worktrees()` combines git + cache. `refresh_from_upstream()` updates items from remote.
-- **tui.py**: Textual UI. `TuiApp` class handles rendering and key dispatch. Includes modal prompts and background action handling.
-- **cli.py**: Click group with `main()`, `init_repo()`, `shell_init()` commands.
+- **models.rs**: Data structures only. Contains `WorktreeInfo`, `AheadBehind`, `DiffStat`, `ParsedWorktree`, and GitHub-related structs.
+- **git_ops.rs**: All git subprocess calls. No UI or DB logic. Functions include `run()`, `get_repo_root()`, `parse_worktrees()`, `count_ahead_behind()`, branch/worktree operations, and upstream checks.
+- **gh_ops.rs**: GitHub CLI operations and parsing. Includes `get_pr_info()`, `get_checks_info()`, `classify_checks()`.
+- **cache_db.rs**: SQLite persistence. `CacheDB` API provides cached row reads and upserts for path, pull/push, changes, and PR/check data.
+- **services.rs**: Orchestration layer. `load_worktrees()` combines git + cache. `refresh_from_upstream()` refreshes pull/push, diff stats, and GitHub metadata.
+- **hooks.rs**: Local hook config in `.gw/settings.json`. Provides add/list/run helpers for `PostWorktreeCreation` command hooks.
+- **tui.rs**: ratatui application state, rendering, key dispatch, modals, async refresh, and action execution.
+- **cli.rs**: Top-level command routing and non-interactive behaviors.
 
 ## Build, Test, and Development Commands
 
-This repo uses `uv` for env/deps and `ruff` for lint/format:
+This repo uses Cargo:
 
 ```bash
-uv sync --dev          # create/update .venv with dev tools
-uv run gw              # run the interactive TUI
-uv run gw --help       # CLI help (subcommands/options)
-uv run ruff check .    # lint
-uv run ruff format .   # auto-format
-uv run ty check        # static type checks
+cargo run --             # run gw (interactive TUI when attached to TTY)
+cargo run -- --help      # CLI help
+cargo check              # fast compile/type check
+cargo fmt                # format
+cargo clippy -- -D warnings
+cargo test               # run tests (when present)
 ```
 
 ## Coding Style & Naming Conventions
 
-- Python 3.11+ codebase; type hints required throughout.
-- Indentation: 4 spaces; no tabs.
-- Formatting/linting: Ruff with `line-length = 100` and double quotes.
-- Naming: `snake_case` for functions/vars, `PascalCase` for classes, `UPPER_SNAKE_CASE` for constants.
-- Use `pathlib.Path` over `str` for filesystem paths in new code.
-- Use dataclasses for structured data (prefer frozen when immutable).
-- Keep modules focused: no cross-cutting concerns (e.g., git_ops has no UI code).
+- Rust 2021 edition.
+- Use `rustfmt` defaults; run `cargo fmt` before finalizing.
+- Keep warnings clean in normal development (`cargo clippy -- -D warnings`).
+- Naming: `snake_case` for functions/vars/modules, `PascalCase` for structs/enums, `UPPER_SNAKE_CASE` for constants.
+- Prefer `Path`/`PathBuf` over raw strings for filesystem paths.
+- Keep module boundaries strict: no UI code in `git_ops.rs`; no git subprocess logic in `tui.rs`.
 
 ## Testing Guidelines
 
-- No dedicated test suite yet. If you add tests, use `pytest` and place them under `tests/`.
-- Naming convention: `tests/test_*.py` with `test_*` functions.
-- Run with `uv run pytest` (add `pytest` to the `dev` dependency group).
+- No dedicated test suite yet. If you add tests:
+- Prefer unit tests in module `#[cfg(test)]` blocks and/or integration tests under `tests/`.
+- Run with `cargo test`.
 
 ## Commit & Pull Request Guidelines
 
 - Commit messages in history are short, imperative, and descriptive (e.g. `add PR functionality`), sometimes with an area prefix (e.g. `gw list: improve animation`).
 - PRs include a what/why summary and explicit "how to verify" steps (exact commands/steps).
-- PRs include screenshots or a short recording for UI changes (curses output can change subtly).
+- PRs include screenshots or terminal recordings for UI changes (ratatui output can change subtly).
 - PRs call out any new external dependencies (`gh`, network calls) and their failure modes.
 
 ## Security & Configuration Tips

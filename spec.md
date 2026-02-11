@@ -1,4 +1,4 @@
-# gw - a Python utility for managing git worktrees
+# gw - a Rust utility for managing git worktrees
 
 Git worktrees are a common approach for running multiple AI agents in parallel on a codebase. Managing worktrees and braches can be quite complex, which is where `gw` comes in.
 
@@ -104,11 +104,11 @@ There should be an additional command, `gw init`, that initializes the folder st
 
 ## Tooling
 
-- **uv** for project management, virtualenvs, and dependency resolution.
-- **ruff** for lint + format.
-- **ty** for static type checks.
-- **click** for CLI.
-- **textual** for the interactive terminal UI.
+- **cargo** for build, dependency management, and execution.
+- **clap** for CLI parsing.
+- **rusqlite** for cache persistence.
+- **serde / serde_json** for settings and API payload parsing.
+- **comfy-table** for table rendering.
 
 ## Appendix
 
