@@ -379,18 +379,12 @@ fn preflight_worktree_targets(repo_root: &Path, missing_branches: &[String]) -> 
                 target.display()
             ));
         }
-        let parent = target.parent().ok_or_else(|| {
+        target.parent().ok_or_else(|| {
             anyhow!(
                 "gw init: invalid worktree target for {branch}: {}",
                 target.display()
             )
         })?;
-        if !parent.exists() {
-            return Err(anyhow!(
-                "gw init: missing parent directory for worktree {branch}: {}",
-                parent.display()
-            ));
-        }
     }
     Ok(())
 }
