@@ -243,7 +243,9 @@ fn preserved_with_git(mut keep: Vec<String>) -> HashSet<String> {
 }
 
 fn clear_repo_root(repo_root: &Path, keep_entries: &HashSet<String>) -> Result<()> {
-    for entry in fs::read_dir(repo_root)? {
+    for entry in fs::read_dir(repo_root)
+        .with_context(|| format!("gw init: failed to list {}", repo_root.display()))?
+    {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
         if keep_entries.contains(&name) {
@@ -252,9 +254,16 @@ fn clear_repo_root(repo_root: &Path, keep_entries: &HashSet<String>) -> Result<(
 
         let path = entry.path();
         if path.is_symlink() || path.is_file() {
-            let _ = fs::remove_file(&path);
+            fs::remove_file(&path).with_context(|| {
+                format!(
+                    "gw init: failed to delete file or symlink {}",
+                    path.display()
+                )
+            })?;
         } else if path.is_dir() {
-            let _ = fs::remove_dir_all(&path);
+            fs::remove_dir_all(&path).with_context(|| {
+                format!("gw init: failed to delete directory {}", path.display())
+            })?;
         }
     }
 
