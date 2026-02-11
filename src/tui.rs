@@ -31,7 +31,7 @@ const HEADERS: [&str; 7] = [
 ];
 
 const COMMAND_BAR: &str =
-    "Enter: open  |  n: new  |  D: delete  |  R: rename  |  p: pull  |  P: push  |  r: refresh  |  q/Esc: quit";
+    "Enter: open  |  n: new from main  |  N: new from selected  |  D: delete  |  R: rename  |  p: pull  |  P: push  |  r: refresh  |  q/Esc: quit";
 const SPINNER: &[char] = &['|', '/', '-', '\\'];
 
 enum ConfirmAction {
@@ -47,7 +47,10 @@ enum InputAction {
         old_ref_name: String,
         old_path: PathBuf,
     },
-    NewWorktree,
+    NewWorktree {
+        base_branch: String,
+        pull_before_create: Option<PathBuf>,
+    },
 }
 
 enum Mode {
@@ -271,7 +274,8 @@ impl TuiApp {
             KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('r') => self.action_refresh(),
-            KeyCode::Char('n') => self.action_new_worktree(),
+            KeyCode::Char('n') => self.action_new_worktree_from_main(),
+            KeyCode::Char('N') => self.action_new_worktree_from_selected(),
             KeyCode::Char('d') => self.action_delete_worktree(),
             KeyCode::Char('D') => self.action_delete_worktree(),
             KeyCode::Char('R') => self.action_rename_worktree(),
@@ -304,7 +308,7 @@ impl TuiApp {
                 if let Mode::Input { action, .. } = mode {
                     self.status = match action {
                         InputAction::Rename { .. } => "Rename cancelled.".to_string(),
-                        InputAction::NewWorktree => "Create cancelled.".to_string(),
+                        InputAction::NewWorktree { .. } => "Create cancelled.".to_string(),
                     };
                 }
             }
@@ -392,7 +396,10 @@ impl TuiApp {
                     },
                 );
             }
-            InputAction::NewWorktree => {
+            InputAction::NewWorktree {
+                base_branch,
+                pull_before_create,
+            } => {
                 if normalized.is_empty() {
                     self.status = "Create cancelled.".to_string();
                     return;
@@ -415,7 +422,6 @@ impl TuiApp {
                 }
 
                 let repo_root = self.repo_root.clone();
-                let default_branch = self.default_branch.clone();
                 let new_branch = normalized.clone();
 
                 self.start_operation(
@@ -425,6 +431,10 @@ impl TuiApp {
                     Some(new_branch.clone()),
                     PostSuccessAction::ReloadOnly,
                     move || {
+                        if let Some(base_path) = pull_before_create {
+                            git_ops::pull(&base_path)?;
+                        }
+
                         let target = repo_root.join(&new_branch);
                         if git_ops::remote_branch_exists(&repo_root, &new_branch) {
                             git_ops::fetch_branch(&repo_root, &new_branch)?;
@@ -439,7 +449,7 @@ impl TuiApp {
                                 &repo_root,
                                 &target,
                                 &new_branch,
-                                Some(&default_branch),
+                                Some(&base_branch),
                             )?;
                         }
                         hooks::run_post_worktree_creation_hooks(&repo_root, Some(&target))?;
@@ -604,16 +614,54 @@ impl TuiApp {
         };
     }
 
-    fn action_new_worktree(&mut self) {
+    fn action_new_worktree_from_main(&mut self) {
         if self.busy {
             self.status = "Another operation is in progress.".to_string();
             return;
         }
 
+        let Some(main_item) = self
+            .snapshot_items()
+            .into_iter()
+            .find(|item| item.branch == "main")
+        else {
+            self.status = "Cannot create from main: no 'main' worktree is available.".to_string();
+            return;
+        };
+
         self.mode = Mode::Input {
             prompt: "New branch name:".to_string(),
             value: String::new(),
-            action: InputAction::NewWorktree,
+            action: InputAction::NewWorktree {
+                base_branch: "main".to_string(),
+                pull_before_create: Some(main_item.path),
+            },
+        };
+    }
+
+    fn action_new_worktree_from_selected(&mut self) {
+        if self.busy {
+            self.status = "Another operation is in progress.".to_string();
+            return;
+        }
+
+        let Some(current) = self.current_item() else {
+            self.status = "No worktrees available.".to_string();
+            return;
+        };
+
+        if current.is_detached() {
+            self.status = "Cannot create from a detached worktree.".to_string();
+            return;
+        }
+
+        self.mode = Mode::Input {
+            prompt: format!("New branch name (from {}):", current.branch),
+            value: String::new(),
+            action: InputAction::NewWorktree {
+                base_branch: current.branch,
+                pull_before_create: None,
+            },
         };
     }
 

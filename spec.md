@@ -47,7 +47,8 @@ The list should be navigateable by Up/Down arrow keys, and there should be comma
 * <Enter>: `cd` into that worktree, exit `gw`
 * D: delete this worktree, and the associated folder and branch, include confirmation dialog (warn if unpushed commits; do not delete remote branch)
 * R: rename the current worktree (both the branch and the folder)
-* n: create a new worktee-branch, always base it off of the default branch (use "main" if detection is too hard), run hooks after creation, check upstream if branch with that name is already present, if so, fetch it instead of creating it anew
+* n: create a new worktree-branch from `main`; always pull `main` first, then run hooks after creation; if a same-named upstream branch exists, fetch it instead of creating it anew
+* N: create a new worktree-branch from the currently selected branch; do not pull before creation; run hooks after creation
 * p: pull the branch
 * P: push the branch
 * r: refetch all info
