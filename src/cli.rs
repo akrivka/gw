@@ -1,3 +1,4 @@
+use crate::models::HealthReport;
 use crate::{git_ops, hooks, services, tui};
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -49,12 +50,25 @@ pub fn run() -> Result<()> {
 
 fn run_default() -> Result<()> {
     let repo_root = git_ops::get_repo_root().context("gw: not inside a git repository")?;
+    let interactive = io::stdin().is_terminal() && io::stderr().is_terminal();
 
     git_ops::prune_worktrees(&repo_root);
+    let health = services::health_check(&repo_root)?;
+    if health.has_issues() {
+        if !interactive {
+            return Err(anyhow!(
+                "gw: detected worktree/branch inconsistencies; rerun in an interactive terminal to repair them, or run `gw init`"
+            ));
+        }
+        if !handle_health_issues(&repo_root, &health)? {
+            return Ok(());
+        }
+    }
+
     let default_branch = git_ops::get_default_branch(&repo_root);
     let items = services::load_worktrees(&repo_root)?;
 
-    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+    if !interactive {
         for item in &items {
             println!("{}", item.path.display());
         }
@@ -77,6 +91,51 @@ fn run_default() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_health_issues(repo_root: &Path, health: &HealthReport) -> Result<bool> {
+    println!("Detected issue with gw setup in {}", repo_root.display());
+    println!();
+
+    if !health.orphaned_worktrees.is_empty() {
+        println!(
+            "- worktrees without branches to delete: {}",
+            health.orphaned_worktrees.len()
+        );
+        for path in &health.orphaned_worktrees {
+            println!("  - {}", path.display());
+        }
+    }
+
+    if !health.missing_worktrees.is_empty() {
+        println!(
+            "- branches without worktrees to create: {}",
+            health.missing_worktrees.len()
+        );
+        for branch in &health.missing_worktrees {
+            println!("  - {branch} -> {}", repo_root.join(branch).display());
+        }
+    }
+
+    if !health.unrecoverable_reasons.is_empty() {
+        println!("- unrecoverable issues:");
+        for reason in &health.unrecoverable_reasons {
+            println!("  - {reason}");
+        }
+        return Err(anyhow!(
+            "gw: setup is not recoverable automatically; run `gw init` first"
+        ));
+    }
+
+    println!();
+    if !confirm("Apply these fixes now?")? {
+        println!("gw: cancelled");
+        return Ok(false);
+    }
+
+    services::doctor_repo(repo_root, health)?;
+    println!("gw: setup repaired");
+    Ok(true)
 }
 
 fn command_available(cmd: &str) -> bool {

@@ -1,8 +1,9 @@
 use crate::cache_db::CacheDB;
-use crate::models::WorktreeInfo;
+use crate::models::{HealthReport, WorktreeInfo};
 use crate::{gh_ops, git_ops};
-use anyhow::Result;
-use std::path::Path;
+use anyhow::{anyhow, Result};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 pub fn make_cache_key(branch: &str, head: &str) -> String {
     if !branch.is_empty() && branch != "(detached)" {
@@ -254,6 +255,101 @@ pub fn refresh_from_upstream(
 
     if gh_available {
         refresh_github(repo_root, items)?;
+    }
+
+    Ok(())
+}
+
+pub fn health_check(repo_root: &Path) -> Result<HealthReport> {
+    let branches = git_ops::list_local_branches(repo_root)?;
+    let branch_set: HashSet<String> = branches.iter().cloned().collect();
+    let is_bare = git_ops::is_bare_repo(repo_root)?;
+    let worktrees = git_ops::parse_worktrees(Some(repo_root))?;
+
+    let repo_abs = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+
+    let mut branch_counts: HashMap<String, usize> = HashMap::new();
+    let mut mapped_branches = HashSet::new();
+    let mut orphaned_worktrees = Vec::new();
+    let mut unrecoverable_reasons = Vec::new();
+
+    for wt in &worktrees {
+        let path_abs = wt.path.canonicalize().unwrap_or_else(|_| wt.path.clone());
+        if !path_abs.starts_with(&repo_abs) {
+            unrecoverable_reasons.push(format!(
+                "worktree path is outside repo root: {}",
+                wt.path.display()
+            ));
+            continue;
+        }
+
+        if wt.branch.is_empty() || wt.branch == "(detached)" || !branch_set.contains(&wt.branch) {
+            orphaned_worktrees.push(wt.path.clone());
+            continue;
+        }
+
+        mapped_branches.insert(wt.branch.clone());
+        let entry = branch_counts.entry(wt.branch.clone()).or_insert(0);
+        *entry += 1;
+    }
+
+    for (branch, count) in branch_counts {
+        if count > 1 {
+            unrecoverable_reasons.push(format!(
+                "branch {branch} is checked out in {count} worktrees"
+            ));
+        }
+    }
+
+    let mut missing_worktrees = Vec::new();
+    for branch in branches {
+        if !mapped_branches.contains(&branch) {
+            let target = repo_root.join(&branch);
+            if target.exists() {
+                unrecoverable_reasons.push(format!(
+                    "missing worktree for branch {branch}, but target path already exists: {}",
+                    target.display()
+                ));
+            } else {
+                missing_worktrees.push(branch);
+            }
+        }
+    }
+
+    if !is_bare {
+        unrecoverable_reasons
+            .push("repository root is not bare; run `gw init` to convert layout".to_string());
+    }
+
+    missing_worktrees.sort();
+    orphaned_worktrees.sort();
+    orphaned_worktrees.dedup();
+    unrecoverable_reasons.sort();
+    unrecoverable_reasons.dedup();
+
+    Ok(HealthReport {
+        missing_worktrees,
+        orphaned_worktrees,
+        unrecoverable_reasons,
+    })
+}
+
+pub fn doctor_repo(repo_root: &Path, report: &HealthReport) -> Result<()> {
+    if !report.is_recoverable() {
+        return Err(anyhow!(
+            "gw: setup has unrecoverable issues; run `gw init` first"
+        ));
+    }
+
+    for path in &report.orphaned_worktrees {
+        git_ops::worktree_remove(repo_root, path)?;
+    }
+
+    for branch in &report.missing_worktrees {
+        let target: PathBuf = repo_root.join(branch);
+        git_ops::worktree_add(repo_root, &target, branch, None)?;
     }
 
     Ok(())

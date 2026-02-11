@@ -71,3 +71,22 @@ pub struct ChecksInfo {
     pub total: i64,
     pub state: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub struct HealthReport {
+    pub missing_worktrees: Vec<String>,
+    pub orphaned_worktrees: Vec<PathBuf>,
+    pub unrecoverable_reasons: Vec<String>,
+}
+
+impl HealthReport {
+    pub fn has_issues(&self) -> bool {
+        !self.missing_worktrees.is_empty()
+            || !self.orphaned_worktrees.is_empty()
+            || !self.unrecoverable_reasons.is_empty()
+    }
+
+    pub fn is_recoverable(&self) -> bool {
+        self.unrecoverable_reasons.is_empty()
+    }
+}
