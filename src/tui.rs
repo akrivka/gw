@@ -20,14 +20,13 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const HEADERS: [&str; 7] = [
+const HEADERS: [&str; 6] = [
     "BRANCH NAME",
     "LAST COMMIT",
     "PULL/PUSH",
     "PULL REQUEST",
     "BEHIND|AHEAD",
     "CHANGES",
-    "CHECKS",
 ];
 
 const COMMAND_BAR: &str =
@@ -886,13 +885,12 @@ impl TuiApp {
         let table = Table::new(
             rows,
             [
-                Constraint::Length(28),
+                Constraint::Length(36),
                 Constraint::Length(12),
+                Constraint::Length(18),
                 Constraint::Length(24),
-                Constraint::Length(34),
                 Constraint::Length(14),
                 Constraint::Length(14),
-                Constraint::Length(16),
             ],
         )
         .header(
@@ -1052,26 +1050,10 @@ fn format_changes(item: &WorktreeInfo) -> (String, bool) {
     )
 }
 
-fn format_checks(item: &WorktreeInfo) -> (String, bool) {
-    let checks = if let (Some(passed), Some(total)) = (item.checks_passed, item.checks_total) {
-        match item.checks_state.as_deref() {
-            Some("fail") => format!("fail {passed}/{total}"),
-            Some("pend") => format!("pend {passed}/{total}"),
-            Some("ok") => format!("ok {passed}/{total}"),
-            _ => format!("{passed}/{total}"),
-        }
-    } else {
-        String::new()
-    };
-
-    (checks, !item.checks_validated)
-}
-
 fn format_row(item: &WorktreeInfo, default_branch: &str) -> Vec<(String, bool)> {
     let (pr, pr_cached) = format_pr(item, default_branch);
     let (pull_push, pull_push_cached) = format_pull_push(item);
     let (changes, changes_cached) = format_changes(item);
-    let (checks, checks_cached) = format_checks(item);
     let behind = item.behind;
     let ahead = item.ahead;
 
@@ -1082,7 +1064,6 @@ fn format_row(item: &WorktreeInfo, default_branch: &str) -> Vec<(String, bool)> 
         (pr, pr_cached),
         (format!("{behind:>6}|{ahead}"), false),
         (changes, changes_cached),
-        (checks, checks_cached),
     ]
 }
 
