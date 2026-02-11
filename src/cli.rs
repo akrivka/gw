@@ -224,13 +224,8 @@ fn init_repo() -> Result<()> {
         return Ok(());
     }
 
-    git_ops::set_bare(&repo_root)?;
-    clear_repo_root(&repo_root, &preserved_with_git(preserved))?;
-
-    for branch in &missing {
-        let target = repo_root.join(branch);
-        git_ops::worktree_add(&repo_root, &target, branch, None)?;
-    }
+    let keep_entries = preserved_with_git(preserved);
+    convert_repo_with_rollback(&repo_root, &keep_entries, &missing)?;
 
     println!("gw init: done");
     Ok(())
@@ -242,7 +237,131 @@ fn preserved_with_git(mut keep: Vec<String>) -> HashSet<String> {
     keep.into_iter().collect()
 }
 
-fn clear_repo_root(repo_root: &Path, keep_entries: &HashSet<String>) -> Result<()> {
+#[derive(Debug)]
+struct StagedEntry {
+    original: PathBuf,
+    backup: PathBuf,
+}
+
+fn convert_repo_with_rollback(
+    repo_root: &Path,
+    keep_entries: &HashSet<String>,
+    missing_branches: &[String],
+) -> Result<()> {
+    let backup_dir = create_backup_dir(repo_root)?;
+    let mut tx = InitConversionTx {
+        repo_root: repo_root.to_path_buf(),
+        backup_dir,
+        staged_entries: Vec::new(),
+        created_worktrees: Vec::new(),
+        bare_changed: false,
+    };
+
+    let mut stage_keep = keep_entries.clone();
+    if let Some(name) = tx.backup_dir.file_name() {
+        stage_keep.insert(name.to_string_lossy().to_string());
+    }
+    preflight_worktree_targets(repo_root, missing_branches)?;
+
+    let convert_result = (|| -> Result<()> {
+        tx.staged_entries = stage_repo_root(repo_root, &stage_keep, &tx.backup_dir)?;
+        git_ops::set_bare(repo_root)?;
+        tx.bare_changed = true;
+
+        for branch in missing_branches {
+            let target = repo_root.join(branch);
+            git_ops::worktree_add(repo_root, &target, branch, None)
+                .with_context(|| format!("gw init: failed to create worktree for {branch}"))?;
+            tx.created_worktrees.push(target);
+        }
+
+        postcheck_worktrees(repo_root, missing_branches)?;
+        Ok(())
+    })();
+
+    match convert_result {
+        Ok(()) => {
+            if let Err(err) = fs::remove_dir_all(&tx.backup_dir) {
+                eprintln!(
+                    "gw init: warning: conversion succeeded, but failed to remove backup {}: {err}",
+                    tx.backup_dir.display()
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let rollback_errors = rollback_conversion(&tx);
+            if rollback_errors.is_empty() {
+                Err(err)
+            } else {
+                Err(anyhow!(
+                    "{err}\ngw init: rollback encountered errors:\n{}",
+                    rollback_errors.join("\n")
+                ))
+            }
+        }
+    }
+}
+
+struct InitConversionTx {
+    repo_root: PathBuf,
+    backup_dir: PathBuf,
+    staged_entries: Vec<StagedEntry>,
+    created_worktrees: Vec<PathBuf>,
+    bare_changed: bool,
+}
+
+fn preflight_worktree_targets(repo_root: &Path, missing_branches: &[String]) -> Result<()> {
+    for branch in missing_branches {
+        let target = repo_root.join(branch);
+        if target.exists() {
+            return Err(anyhow!(
+                "gw init: cannot create worktree for {branch}; target path already exists: {}",
+                target.display()
+            ));
+        }
+        let parent = target.parent().ok_or_else(|| {
+            anyhow!(
+                "gw init: invalid worktree target for {branch}: {}",
+                target.display()
+            )
+        })?;
+        if !parent.exists() {
+            return Err(anyhow!(
+                "gw init: missing parent directory for worktree {branch}: {}",
+                parent.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn create_backup_dir(repo_root: &Path) -> Result<PathBuf> {
+    let pid = std::process::id();
+    for attempt in 0..50 {
+        let candidate = repo_root.join(format!(".gw-init-backup-{pid}-{attempt}"));
+        if !candidate.exists() {
+            fs::create_dir(&candidate).with_context(|| {
+                format!(
+                    "gw init: failed to create backup directory {}",
+                    candidate.display()
+                )
+            })?;
+            return Ok(candidate);
+        }
+    }
+    Err(anyhow!(
+        "gw init: failed to allocate a unique backup directory under {}",
+        repo_root.display()
+    ))
+}
+
+fn stage_repo_root(
+    repo_root: &Path,
+    keep_entries: &HashSet<String>,
+    backup_dir: &Path,
+) -> Result<Vec<StagedEntry>> {
+    let mut staged = Vec::new();
     for entry in fs::read_dir(repo_root)
         .with_context(|| format!("gw init: failed to list {}", repo_root.display()))?
     {
@@ -251,23 +370,71 @@ fn clear_repo_root(repo_root: &Path, keep_entries: &HashSet<String>) -> Result<(
         if keep_entries.contains(&name) {
             continue;
         }
+        let source = entry.path();
+        let backup = backup_dir.join(&name);
+        fs::rename(&source, &backup).with_context(|| {
+            format!(
+                "gw init: failed to stage {} into backup {}",
+                source.display(),
+                backup.display()
+            )
+        })?;
+        staged.push(StagedEntry {
+            original: source,
+            backup,
+        });
+    }
+    Ok(staged)
+}
 
-        let path = entry.path();
-        if path.is_symlink() || path.is_file() {
-            fs::remove_file(&path).with_context(|| {
-                format!(
-                    "gw init: failed to delete file or symlink {}",
-                    path.display()
-                )
-            })?;
-        } else if path.is_dir() {
-            fs::remove_dir_all(&path).with_context(|| {
-                format!("gw init: failed to delete directory {}", path.display())
-            })?;
+fn postcheck_worktrees(repo_root: &Path, missing_branches: &[String]) -> Result<()> {
+    let map = git_ops::worktree_branch_map(repo_root)?;
+    for branch in missing_branches {
+        if !map.contains_key(branch) {
+            return Err(anyhow!(
+                "gw init: post-check failed; worktree for branch {branch} was not registered"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn rollback_conversion(tx: &InitConversionTx) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for path in tx.created_worktrees.iter().rev() {
+        if let Err(err) = git_ops::worktree_remove(&tx.repo_root, path) {
+            errors.push(format!(
+                "- failed to remove created worktree {}: {err}",
+                path.display()
+            ));
         }
     }
 
-    Ok(())
+    if tx.bare_changed {
+        if let Err(err) = git_ops::run(&["config", "core.bare", "false"], Some(&tx.repo_root)) {
+            errors.push(format!("- failed to restore core.bare=false: {err}"));
+        }
+    }
+
+    for entry in tx.staged_entries.iter().rev() {
+        if let Err(err) = fs::rename(&entry.backup, &entry.original) {
+            errors.push(format!(
+                "- failed to restore {} from backup {}: {err}",
+                entry.original.display(),
+                entry.backup.display()
+            ));
+        }
+    }
+
+    if let Err(err) = fs::remove_dir_all(&tx.backup_dir) {
+        errors.push(format!(
+            "- failed to remove backup directory {}: {err}",
+            tx.backup_dir.display()
+        ));
+    }
+
+    errors
 }
 
 fn shell_init() -> Result<()> {
