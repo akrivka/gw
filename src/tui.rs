@@ -63,10 +63,17 @@ enum Mode {
     },
 }
 
+#[derive(Clone, Copy)]
+enum PostSuccessAction {
+    None,
+    ReloadOnly,
+    ReloadAndRefresh,
+}
+
 struct OpResult {
     status: String,
     succeeded: bool,
-    reload_on_success: bool,
+    post_success_action: PostSuccessAction,
     selected_branch_after: Option<String>,
 }
 
@@ -111,11 +118,18 @@ struct TuiApp {
 impl TuiApp {
     fn new(
         repo_root: PathBuf,
-        items: Vec<WorktreeInfo>,
+        mut items: Vec<WorktreeInfo>,
         default_branch: String,
         warning: Option<String>,
         gh_available: bool,
     ) -> Self {
+        if !gh_available {
+            for item in &mut items {
+                item.pr_validated = true;
+                item.checks_validated = true;
+            }
+        }
+
         let mut table_state = TableState::default();
         if items.is_empty() {
             table_state.select(None);
@@ -214,10 +228,30 @@ impl TuiApp {
         self.spinner_message = None;
         self.status = result.status;
 
-        if result.succeeded && result.reload_on_success {
-            if let Err(err) = self.reload_items(result.selected_branch_after.as_deref()) {
-                self.status = format!("Reload failed: {err}");
+        if !result.succeeded {
+            return;
+        }
+
+        match result.post_success_action {
+            PostSuccessAction::None => {}
+            PostSuccessAction::ReloadOnly | PostSuccessAction::ReloadAndRefresh => {
+                if let Err(err) = self.reload_items(result.selected_branch_after.as_deref()) {
+                    self.status = format!("Reload failed: {err}");
+                    return;
+                }
             }
+        }
+
+        match result.post_success_action {
+            PostSuccessAction::None => {}
+            PostSuccessAction::ReloadOnly => {
+                let mut items = match self.items.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                mark_refresh_columns_validated(&mut items);
+            }
+            PostSuccessAction::ReloadAndRefresh => self.start_refresh(false),
         }
     }
 
@@ -307,7 +341,7 @@ impl TuiApp {
                     format!("Deleted {branch}."),
                     "Delete failed".to_string(),
                     None,
-                    true,
+                    PostSuccessAction::ReloadOnly,
                     move || {
                         git_ops::worktree_remove(&repo_root, &path)?;
                         git_ops::branch_delete(&repo_root, &ref_name)?;
@@ -350,7 +384,7 @@ impl TuiApp {
                     format!("Renamed to {new_branch}."),
                     "Rename failed".to_string(),
                     Some(new_branch.clone()),
-                    true,
+                    PostSuccessAction::ReloadOnly,
                     move || {
                         git_ops::branch_rename(&repo_root, &old_ref_name, &new_branch)?;
                         git_ops::worktree_move(&repo_root, &old_path, &new_path)?;
@@ -389,7 +423,7 @@ impl TuiApp {
                     format!("Created {new_branch}."),
                     "Create failed".to_string(),
                     Some(new_branch.clone()),
-                    true,
+                    PostSuccessAction::ReloadOnly,
                     move || {
                         let target = repo_root.join(&new_branch);
                         if git_ops::remote_branch_exists(&repo_root, &new_branch) {
@@ -458,7 +492,7 @@ impl TuiApp {
             format!("Pulled {branch}."),
             "Pull failed".to_string(),
             Some(branch),
-            true,
+            PostSuccessAction::ReloadAndRefresh,
             move || {
                 git_ops::pull(&path)?;
                 Ok(())
@@ -492,7 +526,7 @@ impl TuiApp {
             format!("Pushed {branch}."),
             "Push failed".to_string(),
             Some(branch),
-            true,
+            PostSuccessAction::ReloadAndRefresh,
             move || {
                 if has_upstream {
                     git_ops::push(&path)?;
@@ -626,7 +660,13 @@ impl TuiApp {
 
     fn reload_items(&mut self, selected_branch: Option<&str>) -> Result<()> {
         self.default_branch = git_ops::get_default_branch(&self.repo_root);
-        let new_items = services::load_worktrees(&self.repo_root)?;
+        let mut new_items = services::load_worktrees(&self.repo_root)?;
+        if !self.gh_available {
+            for item in &mut new_items {
+                item.pr_validated = true;
+                item.checks_validated = true;
+            }
+        }
 
         {
             let mut guard = match self.items.lock() {
@@ -685,13 +725,11 @@ impl TuiApp {
                 .err()
                 .map(|err| err.to_string());
 
-            if result.is_none() {
-                let mut guard = match items.lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                merge_refreshed_items(&mut guard, &refreshed);
-            }
+            let mut guard = match items.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            merge_refreshed_items(&mut guard, &refreshed);
 
             let _ = tx.send(result);
             refresh_running.store(false, Ordering::SeqCst);
@@ -704,7 +742,7 @@ impl TuiApp {
         success_message: String,
         failure_prefix: String,
         selected_branch_after: Option<String>,
-        reload_on_success: bool,
+        post_success_action: PostSuccessAction,
         action: F,
     ) where
         F: FnOnce() -> Result<()> + Send + 'static,
@@ -726,13 +764,13 @@ impl TuiApp {
                 Ok(()) => OpResult {
                     status: success_message,
                     succeeded: true,
-                    reload_on_success,
+                    post_success_action,
                     selected_branch_after,
                 },
                 Err(err) => OpResult {
                     status: format!("{failure_prefix}: {err}"),
                     succeeded: false,
-                    reload_on_success: false,
+                    post_success_action: PostSuccessAction::None,
                     selected_branch_after: None,
                 },
             };
@@ -1022,6 +1060,15 @@ fn merge_refreshed_items(current: &mut [WorktreeInfo], refreshed: &[WorktreeInfo
         item.checks_state = new_item.checks_state.clone();
         item.checks_validated = new_item.checks_validated;
         item.changes_validated = new_item.changes_validated;
+    }
+}
+
+fn mark_refresh_columns_validated(items: &mut [WorktreeInfo]) {
+    for item in items {
+        item.pull_push_validated = true;
+        item.changes_validated = true;
+        item.pr_validated = true;
+        item.checks_validated = true;
     }
 }
 
