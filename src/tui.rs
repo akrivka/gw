@@ -409,7 +409,7 @@ impl TuiApp {
                                 Some(&default_branch),
                             )?;
                         }
-                        hooks::run_post_worktree_creation_hooks(&repo_root, None)?;
+                        hooks::run_post_worktree_creation_hooks(&repo_root, Some(&target))?;
                         Ok(())
                     },
                 );
