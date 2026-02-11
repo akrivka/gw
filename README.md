@@ -42,3 +42,33 @@ Coming soon.
 This program is completely vibe-coded in Rust. You can see the spec I used in docs/spec.md. I initially vibe-coded this in Python (curses -> Textual) but found it too buggy, so told Codex "rewrite in Rust" and it two-shotted a better impl.
 
 Still WIP, suggestions welcome.
+
+### Deployment
+
+Update Homebrew by tagging a release, updating the tap formula, and pushing the tap change:
+
+```bash
+# 1) Tag and push a new release from this repo
+git tag vX.Y.Z
+git push origin vX.Y.Z
+
+# 2) Re-generate formula in the tap from the new tag tarball
+brew create --tap akrivka/tap \
+  --set-name gw \
+  https://github.com/akrivka/gw/archive/refs/tags/vX.Y.Z.tar.gz
+
+# 3) Update Formula/gw.rb with:
+#    - url "https://github.com/akrivka/gw/archive/refs/tags/vX.Y.Z.tar.gz"
+#    - sha256 "<new-tarball-sha256>"
+
+# 4) Validate locally
+brew audit --strict --new-formula gw
+brew install --build-from-source akrivka/tap/gw
+brew test gw
+
+# 5) Commit and push tap changes
+cd "$(brew --repository akrivka/tap)"
+git add Formula/gw.rb
+git commit -m "Update gw to vX.Y.Z"
+git push
+```
