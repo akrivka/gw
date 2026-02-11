@@ -980,13 +980,15 @@ fn format_row(item: &WorktreeInfo, default_branch: &str) -> Vec<(String, bool)> 
     let (pull_push, pull_push_cached) = format_pull_push(item);
     let (changes, changes_cached) = format_changes(item);
     let (checks, checks_cached) = format_checks(item);
+    let behind = item.behind;
+    let ahead = item.ahead;
 
     vec![
         (item.branch.clone(), false),
         (relative_time(item.last_commit_ts), false),
         (pull_push, pull_push_cached),
         (pr, pr_cached),
-        (format!("{}|{}", item.behind, item.ahead), false),
+        (format!("{behind:>6}|{ahead}"), false),
         (changes, changes_cached),
         (checks, checks_cached),
     ]
