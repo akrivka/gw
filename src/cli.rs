@@ -94,47 +94,47 @@ fn run_default() -> Result<()> {
 }
 
 fn handle_health_issues(repo_root: &Path, health: &HealthReport) -> Result<bool> {
-    println!("Detected issue with gw setup in {}", repo_root.display());
-    println!();
+    eprintln!("Detected issue with gw setup in {}", repo_root.display());
+    eprintln!();
 
     if !health.orphaned_worktrees.is_empty() {
-        println!(
+        eprintln!(
             "- worktrees without branches to delete: {}",
             health.orphaned_worktrees.len()
         );
         for path in &health.orphaned_worktrees {
-            println!("  - {}", path.display());
+            eprintln!("  - {}", path.display());
         }
     }
 
     if !health.missing_worktrees.is_empty() {
-        println!(
+        eprintln!(
             "- branches without worktrees to create: {}",
             health.missing_worktrees.len()
         );
         for branch in &health.missing_worktrees {
-            println!("  - {branch} -> {}", repo_root.join(branch).display());
+            eprintln!("  - {branch} -> {}", repo_root.join(branch).display());
         }
     }
 
     if !health.unrecoverable_reasons.is_empty() {
-        println!("- unrecoverable issues:");
+        eprintln!("- unrecoverable issues:");
         for reason in &health.unrecoverable_reasons {
-            println!("  - {reason}");
+            eprintln!("  - {reason}");
         }
         return Err(anyhow!(
             "gw: setup is not recoverable automatically; run `gw init` first"
         ));
     }
 
-    println!();
+    eprintln!();
     if !confirm("Apply these fixes now?")? {
-        println!("gw: cancelled");
+        eprintln!("gw: cancelled");
         return Ok(false);
     }
 
     services::doctor_repo(repo_root, health)?;
-    println!("gw: setup repaired");
+    eprintln!("gw: setup repaired");
     Ok(true)
 }
 
@@ -544,8 +544,8 @@ fn rerun_hooks() -> Result<()> {
 }
 
 fn confirm(prompt: &str) -> Result<bool> {
-    print!("{prompt} [y/N]: ");
-    io::stdout().flush()?;
+    eprint!("{prompt} [y/N]: ");
+    io::stderr().flush()?;
 
     let mut buf = String::new();
     io::stdin().read_line(&mut buf)?;
