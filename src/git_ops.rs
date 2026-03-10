@@ -152,6 +152,28 @@ pub fn count_ahead_behind(repo_root: &Path, left: &str, right: &str) -> AheadBeh
     AheadBehind { ahead, behind }
 }
 
+fn parse_numstat(output: &str) -> (i64, i64) {
+    let mut additions = 0_i64;
+    let mut deletions = 0_i64;
+
+    for line in output.lines() {
+        let mut parts = line.split('\t');
+        let a = parts.next().and_then(|v| v.parse::<i64>().ok());
+        let d = parts.next().and_then(|v| v.parse::<i64>().ok());
+        if let (Some(a), Some(d)) = (a, d) {
+            additions += a;
+            deletions += d;
+        }
+    }
+
+    (additions, deletions)
+}
+
+fn diff_numstat(worktree_path: &Path, args: &[&str]) -> (i64, i64) {
+    let numstat = try_run(args, Some(worktree_path)).unwrap_or_default();
+    parse_numstat(&numstat)
+}
+
 pub fn diff_counts(worktree_path: &Path) -> DiffStat {
     if !worktree_path.is_dir() {
         return DiffStat {
@@ -164,19 +186,13 @@ pub fn diff_counts(worktree_path: &Path) -> DiffStat {
     let status = try_run(&["status", "--porcelain"], Some(worktree_path)).unwrap_or_default();
     let dirty = !status.trim().is_empty();
 
-    let mut additions = 0_i64;
-    let mut deletions = 0_i64;
+    let (unstaged_additions, unstaged_deletions) =
+        diff_numstat(worktree_path, &["diff", "--numstat"]);
+    let (staged_additions, staged_deletions) =
+        diff_numstat(worktree_path, &["diff", "--cached", "--numstat"]);
 
-    let numstat = try_run(&["diff", "--numstat"], Some(worktree_path)).unwrap_or_default();
-    for line in numstat.lines() {
-        let mut parts = line.split('\t');
-        let a = parts.next().and_then(|v| v.parse::<i64>().ok());
-        let d = parts.next().and_then(|v| v.parse::<i64>().ok());
-        if let (Some(a), Some(d)) = (a, d) {
-            additions += a;
-            deletions += d;
-        }
-    }
+    let mut additions = unstaged_additions + staged_additions;
+    let deletions = unstaged_deletions + staged_deletions;
 
     let untracked = status
         .lines()
@@ -188,6 +204,66 @@ pub fn diff_counts(worktree_path: &Path) -> DiffStat {
         additions,
         deletions,
         dirty,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{diff_counts, parse_numstat, run};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("gw-git-ops-test-{nanos}"))
+    }
+
+    fn init_repo(path: &Path) {
+        fs::create_dir_all(path).expect("temp repo should be created");
+        run(&["init"], Some(path)).expect("git repo should initialize");
+        run(&["config", "user.name", "GW Tests"], Some(path))
+            .expect("git user.name should configure");
+        run(
+            &["config", "user.email", "gw-tests@example.com"],
+            Some(path),
+        )
+        .expect("git user.email should configure");
+    }
+
+    #[test]
+    fn parse_numstat_ignores_non_numeric_entries() {
+        let (additions, deletions) = parse_numstat("2\t1\tfile.txt\n-\t-\tbinary.dat\n");
+
+        assert_eq!(additions, 2);
+        assert_eq!(deletions, 1);
+    }
+
+    #[test]
+    fn diff_counts_includes_staged_and_unstaged_changes() {
+        let repo_path = unique_temp_dir();
+        init_repo(&repo_path);
+
+        fs::write(repo_path.join("tracked.txt"), "one\n").expect("tracked file should be written");
+        run(&["add", "tracked.txt"], Some(&repo_path)).expect("tracked file should stage");
+        run(&["commit", "-m", "initial"], Some(&repo_path)).expect("initial commit should succeed");
+
+        fs::write(repo_path.join("tracked.txt"), "one\ntwo\n")
+            .expect("tracked file should be updated");
+        run(&["add", "tracked.txt"], Some(&repo_path)).expect("tracked file update should stage");
+        fs::write(repo_path.join("tracked.txt"), "one\ntwo\nthree\n")
+            .expect("tracked file should include unstaged edit");
+
+        let stats = diff_counts(&repo_path);
+
+        assert_eq!(stats.additions, 2);
+        assert_eq!(stats.deletions, 0);
+        assert!(stats.dirty);
+
+        fs::remove_dir_all(&repo_path).expect("temp repo should be removed");
     }
 }
 
